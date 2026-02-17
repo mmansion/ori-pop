@@ -1,0 +1,19 @@
+[workspace]
+members = [
+  "crates/oripop-core",
+  "sketches",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+authors = ["ORIPOP"]
+
+[workspace.dependencies]
+glam = "0.27"
+rand = { version = "0.8", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+winit = "0.29"

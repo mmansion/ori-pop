@@ -1,0 +1,12 @@
+[package]
+name = "sketches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oripop-core = { path = "../crates/oripop-core" }
+
+[[bin]]
+name = "hello-ori-pop"
+path = "hello-ori-pop.rs"

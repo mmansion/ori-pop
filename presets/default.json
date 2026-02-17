@@ -1,0 +1,29 @@
+{
+  "seed": 985734123,
+  "canvas": {
+    "width": 1.0,
+    "height": 1.0
+  },
+  "field": {
+    "singularity": {
+      "cx": 0.58,
+      "cy": 0.44,
+      "falloff": 18.0,
+      "strength": 1.0
+    },
+    "warp_amount": 0.045,
+    "warp_frequency": 7.5
+  },
+  "distribution": {
+    "dot_count": 42000,
+    "density_pow": 1.9,
+    "jitter": 0.0018,
+    "min_radius": 0.0009,
+    "max_radius": 0.0029,
+    "fixed_radius": null
+  },
+  "render": {
+    "invert": false,
+    "threshold": null
+  }
+}
