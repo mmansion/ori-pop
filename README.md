@@ -1,6 +1,5 @@
-# ori-pop
-
-Hyper-minimal creative-coding workspace in Rust.
+# ORI-POP
+MANSION’s personal art-making toolset and hyper-minimal creative-coding workspace in Rust. Built around the tension between order and emergence, it draws on ori—fold as structure—and pop—points in space—to explore how discrete particles organize within invisible fields. Beginning with force rather than image, MANSION employs scalar gradients, attractors, and compression zones to generate geometric landscapes through density and flow—compositions that feel both constructed and discovered.
 
 ## Current Setup
 
