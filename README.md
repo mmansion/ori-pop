@@ -1,11 +1,12 @@
 # ORI-POP
-MANSION’s personal art-making toolset and hyper-minimal creative-coding workspace in Rust. Built around the tension between order and emergence, it draws on ori—fold as structure—and pop—points in space—to explore how discrete particles organize within invisible fields. Beginning with force rather than image, MANSION employs scalar gradients, attractors, and compression zones to generate geometric landscapes through density and flow—compositions that feel both constructed and discovered.
+MANSION's personal art-making toolset and hyper-minimal creative-coding workspace in Rust. Built around the tension between order and emergence, it draws on ori—fold as structure—and pop—points in space—to explore how discrete particles organize within invisible fields. Beginning with force rather than image, MANSION employs scalar gradients, attractors, and compression zones to generate geometric landscapes through density and flow—compositions that feel both constructed and discovered.
 
 ## Current Setup
 
 - `crates/oripop-core`: the framework layer.
-  - deterministic dot-field generation APIs.
-  - minimal window bootstrapping via `run_window(width, height, title)`.
+  - Processing-style drawing API: `background()`, `stroke()`, `stroke_weight()`, `line()`, etc.
+  - GPU-backed rendering via wgpu.
+  - Deterministic dot-field generation APIs.
 - `sketches`: sketchbook crate.
   - sketches depend only on `oripop-core`.
   - each sketch is its own app (`fn main`) as a raw `.rs` file.
@@ -24,10 +25,19 @@ File:
 Code:
 
 ```rust
-use oripop_core::run_window;
+use oripop_core::prelude::*;
 
 fn main() {
-    run_window(900, 700, "hello-ori-pop");
+    size(900, 700);
+    title("hello-ori-pop");
+    run(draw);
+}
+
+fn draw() {
+    background(15, 15, 20);
+    stroke(255, 100, 50);
+    stroke_weight(3.0);
+    line(100.0, 100.0, 800.0, 600.0);
 }
 ```
 

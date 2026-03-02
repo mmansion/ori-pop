@@ -1,11 +1,8 @@
+pub mod draw;
+pub mod prelude;
+
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use winit::{
-    dpi::LogicalSize,
-    event::{Event, WindowEvent},
-    event_loop::EventLoop,
-    window::WindowBuilder,
-};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Params {
@@ -236,26 +233,6 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-pub fn run_window(width: u32, height: u32, title: &str) {
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let _window = WindowBuilder::new()
-        .with_title(title)
-        .with_inner_size(LogicalSize::new(width as f64, height as f64))
-        .build(&event_loop)
-        .expect("failed to create window");
-
-    event_loop
-        .run(|event, target| {
-            if let Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } = event
-            {
-                target.exit();
-            }
-        })
-        .expect("event loop error");
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,4 +264,3 @@ mod tests {
         assert_eq!(dots.len(), params.distribution.dot_count as usize);
     }
 }
-

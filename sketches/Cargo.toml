@@ -6,7 +6,12 @@ license.workspace = true
 
 [dependencies]
 oripop-core = { path = "../crates/oripop-core" }
+rand.workspace = true
 
 [[bin]]
 name = "hello-ori-pop"
 path = "hello-ori-pop.rs"
+
+[[bin]]
+name = "primitives-demo"
+path = "primitives-demo.rs"
