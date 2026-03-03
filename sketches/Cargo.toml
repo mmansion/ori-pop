@@ -15,3 +15,7 @@ path = "hello-ori-pop.rs"
 [[bin]]
 name = "primitives-demo"
 path = "primitives-demo.rs"
+
+[[bin]]
+name = "transform-demo"
+path = "transform-demo.rs"

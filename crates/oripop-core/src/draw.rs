@@ -43,6 +43,30 @@ struct Uniforms {
     _pad: [f32; 2],
 }
 
+// ── Transform (2D affine, row-major 2x3) ────────────────
+// x' = m00*x + m01*y + m02
+// y' = m10*x + m11*y + m12
+
+const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+
+fn transform_point(m: &[f32; 6], x: f32, y: f32) -> [f32; 2] {
+    [
+        m[0] * x + m[1] * y + m[2],
+        m[3] * x + m[4] * y + m[5],
+    ]
+}
+
+fn mat_mult(m: &[f32; 6], a: &[f32; 6]) -> [f32; 6] {
+    [
+        m[0] * a[0] + m[1] * a[3],
+        m[0] * a[1] + m[1] * a[4],
+        m[0] * a[2] + m[1] * a[5] + m[2],
+        m[3] * a[0] + m[4] * a[3],
+        m[3] * a[1] + m[4] * a[4],
+        m[3] * a[2] + m[4] * a[5] + m[5],
+    ]
+}
+
 // ── Draw State ──────────────────────────────────────────
 
 struct DrawState {
@@ -76,6 +100,8 @@ struct Context {
     vertices: Vec<Vertex>,
     bg: wgpu::Color,
     frame_count: u64,
+    matrix: [f32; 6],
+    matrix_stack: Vec<[f32; 6]>,
 }
 
 impl Context {
@@ -89,12 +115,20 @@ impl Context {
             vertices: Vec::new(),
             bg: wgpu::Color::BLACK,
             frame_count: 0,
+            matrix: IDENTITY,
+            matrix_stack: Vec::new(),
         }
     }
 
     fn reset_frame(&mut self) {
         self.vertices.clear();
         self.frame_count += 1;
+        self.matrix = IDENTITY;
+        self.matrix_stack.clear();
+    }
+
+    fn transform_pt(&self, x: f32, y: f32) -> [f32; 2] {
+        transform_point(&self.matrix, x, y)
     }
 }
 
@@ -172,6 +206,46 @@ pub fn frame_count() -> u64 {
     with_ctx(|ctx| ctx.frame_count)
 }
 
+/// Push current transform onto the stack. Pair with pop().
+pub fn push() {
+    with_ctx(|ctx| ctx.matrix_stack.push(ctx.matrix));
+}
+
+/// Pop transform from the stack. Pair with push().
+pub fn pop() {
+    with_ctx(|ctx| {
+        if let Some(m) = ctx.matrix_stack.pop() {
+            ctx.matrix = m;
+        }
+    });
+}
+
+/// Translate by (dx, dy) in current units.
+pub fn translate(dx: f32, dy: f32) {
+    with_ctx(|ctx| {
+        let t = [1.0, 0.0, dx, 0.0, 1.0, dy];
+        ctx.matrix = mat_mult(&ctx.matrix, &t);
+    });
+}
+
+/// Rotate by angle in radians (counter-clockwise).
+pub fn rotate(angle: f32) {
+    with_ctx(|ctx| {
+        let c = angle.cos();
+        let s = angle.sin();
+        let r = [c, -s, 0.0, s, c, 0.0];
+        ctx.matrix = mat_mult(&ctx.matrix, &r);
+    });
+}
+
+/// Scale by (sx, sy). Use scale(s) for uniform scale.
+pub fn scale(sx: f32, sy: f32) {
+    with_ctx(|ctx| {
+        let s = [sx, 0.0, 0.0, 0.0, sy, 0.0];
+        ctx.matrix = mat_mult(&ctx.matrix, &s);
+    });
+}
+
 pub fn line(x1: f32, y1: f32, x2: f32, y2: f32) {
     with_ctx(|ctx| {
         if !ctx.state.has_stroke {
@@ -243,13 +317,16 @@ pub fn ellipse(x: f32, y: f32, w: f32, h: f32) {
         if ctx.state.has_fill {
             let color = ctx.state.fill_color;
             let step = std::f32::consts::TAU / SEGMENTS as f32;
+            let center = ctx.transform_pt(cx, cy);
             for i in 0..SEGMENTS {
                 let a0 = step * i as f32;
                 let a1 = step * (i + 1) as f32;
+                let p0 = ctx.transform_pt(cx + rx * a0.cos(), cy + ry * a0.sin());
+                let p1 = ctx.transform_pt(cx + rx * a1.cos(), cy + ry * a1.sin());
                 ctx.vertices.extend_from_slice(&[
-                    Vertex { position: [cx, cy], color },
-                    Vertex { position: [cx + rx * a0.cos(), cy + ry * a0.sin()], color },
-                    Vertex { position: [cx + rx * a1.cos(), cy + ry * a1.sin()], color },
+                    Vertex { position: center, color },
+                    Vertex { position: p0, color },
+                    Vertex { position: p1, color },
                 ]);
             }
         }
@@ -274,10 +351,13 @@ pub fn triangle(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
     with_ctx(|ctx| {
         if ctx.state.has_fill {
             let color = ctx.state.fill_color;
+            let p1 = ctx.transform_pt(x1, y1);
+            let p2 = ctx.transform_pt(x2, y2);
+            let p3 = ctx.transform_pt(x3, y3);
             ctx.vertices.extend_from_slice(&[
-                Vertex { position: [x1, y1], color },
-                Vertex { position: [x2, y2], color },
-                Vertex { position: [x3, y3], color },
+                Vertex { position: p1, color },
+                Vertex { position: p2, color },
+                Vertex { position: p3, color },
             ]);
         }
         if ctx.state.has_stroke {
@@ -291,10 +371,10 @@ pub fn triangle(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
 }
 
 fn push_filled_rect(ctx: &mut Context, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-    let tl = [x, y];
-    let tr = [x + w, y];
-    let br = [x + w, y + h];
-    let bl = [x, y + h];
+    let tl = ctx.transform_pt(x, y);
+    let tr = ctx.transform_pt(x + w, y);
+    let br = ctx.transform_pt(x + w, y + h);
+    let bl = ctx.transform_pt(x, y + h);
     ctx.vertices.extend_from_slice(&[
         Vertex { position: tl, color },
         Vertex { position: tr, color },
@@ -306,6 +386,8 @@ fn push_filled_rect(ctx: &mut Context, x: f32, y: f32, w: f32, h: f32, color: [f
 }
 
 fn push_line(ctx: &mut Context, x1: f32, y1: f32, x2: f32, y2: f32, weight: f32, color: [f32; 4]) {
+    let [x1, y1] = ctx.transform_pt(x1, y1);
+    let [x2, y2] = ctx.transform_pt(x2, y2);
     let dx = x2 - x1;
     let dy = y2 - y1;
     let len = (dx * dx + dy * dy).sqrt();

@@ -5,6 +5,7 @@ MANSION's personal art-making toolset and hyper-minimal creative-coding workspac
 
 - `crates/oripop-core`: the framework layer.
   - Processing-style drawing API: `background()`, `stroke()`, `stroke_weight()`, `line()`, etc.
+  - Transforms: `push()`, `pop()`, `translate(dx, dy)`, `rotate(angle_rad)`, `scale(sx, sy)`.
   - GPU-backed rendering via wgpu.
   - Deterministic dot-field generation APIs.
 - `sketches`: sketchbook crate.
