@@ -1,3 +1,33 @@
+//! Processing-style drawing API backed by wgpu.
+//!
+//! Import everything via [`crate::prelude`] and write sketches that look like
+//! Processing: call [`size`], [`title`], optionally [`smooth`] in `main()`,
+//! then [`run`] with a `draw` function that is called every frame.
+//!
+//! # Coordinate system
+//!
+//! Origin is **top-left**, x grows right, y grows down — same as Processing.
+//! All positions are in **logical pixels** (DPI-independent).
+//!
+//! # Example
+//!
+//! ```no_run
+//! use oripop_core::prelude::*;
+//!
+//! fn main() {
+//!     size(800, 600);
+//!     title("my sketch");
+//!     smooth(4);
+//!     run(draw);
+//! }
+//!
+//! fn draw() {
+//!     background(20, 20, 30);
+//!     stroke(255, 200, 100);
+//!     line(100.0, 100.0, 700.0, 500.0);
+//! }
+//! ```
+
 use std::cell::RefCell;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -142,6 +172,9 @@ fn with_ctx<R>(f: impl FnOnce(&mut Context) -> R) -> R {
 
 // ── Public API ──────────────────────────────────────────
 
+/// Set the window dimensions in logical pixels. Call before [`run`].
+///
+/// Defaults to 400 x 400 if not called.
 pub fn size(width: u32, height: u32) {
     with_ctx(|ctx| {
         ctx.width = width;
@@ -149,6 +182,7 @@ pub fn size(width: u32, height: u32) {
     });
 }
 
+/// Set the window title. Call before [`run`].
 pub fn title(t: &str) {
     with_ctx(|ctx| ctx.title = t.to_string());
 }
@@ -165,10 +199,15 @@ pub fn smooth(samples: u32) {
     with_ctx(|ctx| ctx.msaa_samples = s);
 }
 
+/// Clear the canvas to an opaque RGB color. Called each frame before drawing.
+///
+/// Values are 0–255 per channel.
 pub fn background(r: u8, g: u8, b: u8) {
     background_a(r, g, b, 255);
 }
 
+/// Clear the canvas to an RGBA color. The alpha channel is 0 (transparent)
+/// to 255 (opaque).
 pub fn background_a(r: u8, g: u8, b: u8, a: u8) {
     with_ctx(|ctx| {
         ctx.bg = wgpu::Color {
@@ -180,10 +219,14 @@ pub fn background_a(r: u8, g: u8, b: u8, a: u8) {
     });
 }
 
+/// Set the stroke (outline) color to an opaque RGB value and enable stroke.
 pub fn stroke(r: u8, g: u8, b: u8) {
     stroke_a(r, g, b, 255);
 }
 
+/// Set the stroke color with alpha transparency and enable stroke.
+///
+/// Alpha is 0 (fully transparent) to 255 (fully opaque).
 pub fn stroke_a(r: u8, g: u8, b: u8, a: u8) {
     with_ctx(|ctx| {
         ctx.state.stroke_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0];
@@ -191,14 +234,19 @@ pub fn stroke_a(r: u8, g: u8, b: u8, a: u8) {
     });
 }
 
+/// Disable stroke for subsequent shapes.
 pub fn no_stroke() {
     with_ctx(|ctx| ctx.state.has_stroke = false);
 }
 
+/// Set the fill color to an opaque RGB value and enable fill.
 pub fn fill(r: u8, g: u8, b: u8) {
     fill_a(r, g, b, 255);
 }
 
+/// Set the fill color with alpha transparency and enable fill.
+///
+/// Alpha is 0 (fully transparent) to 255 (fully opaque).
 pub fn fill_a(r: u8, g: u8, b: u8, a: u8) {
     with_ctx(|ctx| {
         ctx.state.fill_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0];
@@ -206,14 +254,19 @@ pub fn fill_a(r: u8, g: u8, b: u8, a: u8) {
     });
 }
 
+/// Disable fill for subsequent shapes (outlines only).
 pub fn no_fill() {
     with_ctx(|ctx| ctx.state.has_fill = false);
 }
 
+/// Set the stroke thickness in logical pixels. Default is 1.0.
 pub fn stroke_weight(w: f32) {
     with_ctx(|ctx| ctx.state.stroke_weight = w);
 }
 
+/// Return how many frames have been drawn since [`run`] started.
+///
+/// Starts at 1 on the first call to `draw()`.
 pub fn frame_count() -> u64 {
     with_ctx(|ctx| ctx.frame_count)
 }
@@ -258,6 +311,8 @@ pub fn scale(sx: f32, sy: f32) {
     });
 }
 
+/// Draw a line from (`x1`, `y1`) to (`x2`, `y2`) using the current stroke
+/// color and weight. Does nothing if stroke is disabled.
 pub fn line(x1: f32, y1: f32, x2: f32, y2: f32) {
     with_ctx(|ctx| {
         if !ctx.state.has_stroke {
@@ -291,6 +346,8 @@ pub fn line(x1: f32, y1: f32, x2: f32, y2: f32) {
     });
 }
 
+/// Draw a single point at (`x`, `y`) as a small filled square whose size
+/// equals the current stroke weight.
 pub fn point(x: f32, y: f32) {
     with_ctx(|ctx| {
         if !ctx.state.has_stroke {
@@ -302,6 +359,8 @@ pub fn point(x: f32, y: f32) {
     });
 }
 
+/// Draw a rectangle with its top-left corner at (`x`, `y`) and the given
+/// width and height. Respects current fill and stroke settings.
 pub fn rect(x: f32, y: f32, w: f32, h: f32) {
     with_ctx(|ctx| {
         if ctx.state.has_fill {
@@ -318,6 +377,8 @@ pub fn rect(x: f32, y: f32, w: f32, h: f32) {
     });
 }
 
+/// Draw an ellipse bounded by the rectangle at (`x`, `y`) with the given
+/// width and height. Respects current fill and stroke settings.
 pub fn ellipse(x: f32, y: f32, w: f32, h: f32) {
     const SEGMENTS: usize = 64;
     with_ctx(|ctx| {
@@ -359,6 +420,8 @@ pub fn ellipse(x: f32, y: f32, w: f32, h: f32) {
     });
 }
 
+/// Draw a triangle with vertices at (`x1`,`y1`), (`x2`,`y2`), (`x3`,`y3`).
+/// Respects current fill and stroke settings.
 pub fn triangle(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
     with_ctx(|ctx| {
         if ctx.state.has_fill {
@@ -712,6 +775,12 @@ impl log::Log for Logger {
 
 // ── run() ───────────────────────────────────────────────
 
+/// Open the window and start the draw loop.
+///
+/// `draw_fn` is called once per frame. Configure the window with [`size`],
+/// [`title`], and [`smooth`] *before* calling `run`.
+///
+/// This function blocks until the window is closed.
 pub fn run(draw_fn: fn()) {
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Warn);

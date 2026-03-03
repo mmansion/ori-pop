@@ -1,0 +1,11 @@
+[book]
+title = "ORI-POP Guide"
+authors = ["Mikhail Mansion"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/mmansion/ori-pop"
