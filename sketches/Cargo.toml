@@ -19,3 +19,7 @@ path = "primitives-demo.rs"
 [[bin]]
 name = "transform-demo"
 path = "transform-demo.rs"
+
+[[bin]]
+name = "alpha-demo"
+path = "alpha-demo.rs"

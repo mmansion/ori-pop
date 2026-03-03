@@ -166,19 +166,27 @@ pub fn smooth(samples: u32) {
 }
 
 pub fn background(r: u8, g: u8, b: u8) {
+    background_a(r, g, b, 255);
+}
+
+pub fn background_a(r: u8, g: u8, b: u8, a: u8) {
     with_ctx(|ctx| {
         ctx.bg = wgpu::Color {
             r: r as f64 / 255.0,
             g: g as f64 / 255.0,
             b: b as f64 / 255.0,
-            a: 1.0,
+            a: a as f64 / 255.0,
         };
     });
 }
 
 pub fn stroke(r: u8, g: u8, b: u8) {
+    stroke_a(r, g, b, 255);
+}
+
+pub fn stroke_a(r: u8, g: u8, b: u8, a: u8) {
     with_ctx(|ctx| {
-        ctx.state.stroke_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
+        ctx.state.stroke_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0];
         ctx.state.has_stroke = true;
     });
 }
@@ -188,8 +196,12 @@ pub fn no_stroke() {
 }
 
 pub fn fill(r: u8, g: u8, b: u8) {
+    fill_a(r, g, b, 255);
+}
+
+pub fn fill_a(r: u8, g: u8, b: u8, a: u8) {
     with_ctx(|ctx| {
-        ctx.state.fill_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
+        ctx.state.fill_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0];
         ctx.state.has_fill = true;
     });
 }
