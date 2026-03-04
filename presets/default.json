@@ -12,7 +12,8 @@
       "strength": 1.0
     },
     "warp_amount": 0.045,
-    "warp_frequency": 7.5
+    "warp_frequency": 7.5,
+    "forces": []
   },
   "distribution": {
     "dot_count": 42000,

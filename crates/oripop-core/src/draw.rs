@@ -33,7 +33,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
     dpi::LogicalSize,
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowBuilder},
 };
@@ -132,6 +132,11 @@ struct Context {
     frame_count: u64,
     matrix: [f32; 6],
     matrix_stack: Vec<[f32; 6]>,
+    mouse_x: f32,
+    mouse_y: f32,
+    mouse_pressed: bool,
+    key_pressed: bool,
+    key_code: char,
 }
 
 impl Context {
@@ -147,6 +152,11 @@ impl Context {
             frame_count: 0,
             matrix: IDENTITY,
             matrix_stack: Vec::new(),
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            mouse_pressed: false,
+            key_pressed: false,
+            key_code: '\0',
         }
     }
 
@@ -269,6 +279,31 @@ pub fn stroke_weight(w: f32) {
 /// Starts at 1 on the first call to `draw()`.
 pub fn frame_count() -> u64 {
     with_ctx(|ctx| ctx.frame_count)
+}
+
+/// Current horizontal position of the mouse in logical pixels.
+pub fn mouse_x() -> f32 {
+    with_ctx(|ctx| ctx.mouse_x)
+}
+
+/// Current vertical position of the mouse in logical pixels.
+pub fn mouse_y() -> f32 {
+    with_ctx(|ctx| ctx.mouse_y)
+}
+
+/// True while any mouse button is held down.
+pub fn mouse_pressed() -> bool {
+    with_ctx(|ctx| ctx.mouse_pressed)
+}
+
+/// True while any key is held down.
+pub fn key_pressed() -> bool {
+    with_ctx(|ctx| ctx.key_pressed)
+}
+
+/// The character of the most recently pressed key, or `'\0'` if none.
+pub fn key() -> char {
+    with_ctx(|ctx| ctx.key_code)
 }
 
 /// Push current transform onto the stack. Pair with pop().
@@ -839,6 +874,30 @@ pub fn run(draw_fn: fn()) {
                             Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Timeout) => {}
                             Err(e) => log::error!("render error: {}", e),
                         }
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        with_ctx(|ctx| {
+                            ctx.mouse_x = position.x as f32 / gpu.scale_factor as f32;
+                            ctx.mouse_y = position.y as f32 / gpu.scale_factor as f32;
+                        });
+                    }
+                    WindowEvent::MouseInput { state, .. } => {
+                        with_ctx(|ctx| {
+                            ctx.mouse_pressed = state == ElementState::Pressed;
+                        });
+                    }
+                    WindowEvent::KeyboardInput { event: key_event, .. } => {
+                        let pressed = key_event.state == ElementState::Pressed;
+                        with_ctx(|ctx| {
+                            ctx.key_pressed = pressed;
+                            if pressed {
+                                if let winit::keyboard::Key::Character(ref c) = key_event.logical_key {
+                                    if let Some(ch) = c.chars().next() {
+                                        ctx.key_code = ch;
+                                    }
+                                }
+                            }
+                        });
                     }
                     _ => {}
                 }

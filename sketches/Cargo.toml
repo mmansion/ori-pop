@@ -23,3 +23,11 @@ path = "transform-demo.rs"
 [[bin]]
 name = "alpha-demo"
 path = "alpha-demo.rs"
+
+[[bin]]
+name = "forces-demo"
+path = "forces-demo.rs"
+
+[[bin]]
+name = "interactive-demo"
+path = "interactive-demo.rs"

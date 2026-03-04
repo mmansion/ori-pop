@@ -1,5 +1,12 @@
+pub mod bezier;
 pub mod draw;
+pub mod line;
+pub mod point;
 pub mod prelude;
+
+pub use bezier::Bezier;
+pub use line::Line;
+pub use point::Point;
 
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -45,6 +52,8 @@ pub struct Field {
     pub singularity: Singularity,
     pub warp_amount: f32,
     pub warp_frequency: f32,
+    #[serde(default)]
+    pub forces: Vec<Force>,
 }
 
 impl Default for Field {
@@ -53,6 +62,7 @@ impl Default for Field {
             singularity: Singularity::default(),
             warp_amount: 0.05,
             warp_frequency: 6.0,
+            forces: Vec::new(),
         }
     }
 }
@@ -112,6 +122,66 @@ impl Default for Render {
             threshold: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind")]
+pub enum Force {
+    Attractor {
+        center: Point,
+        strength: f32,
+        falloff: f32,
+    },
+    Gradient {
+        along: Line,
+        strength: f32,
+    },
+    Compression {
+        axis: Line,
+        width: f32,
+        strength: f32,
+    },
+}
+
+pub fn eval_force(force: &Force, x: f32, y: f32) -> f32 {
+    let p = Point::new(x, y);
+    match force {
+        Force::Attractor {
+            center,
+            strength,
+            falloff,
+        } => {
+            let d2 = p.dist_sq(center);
+            strength / (1.0 + falloff * d2)
+        }
+        Force::Gradient { along, strength } => {
+            let dx = along.b.x - along.a.x;
+            let dy = along.b.y - along.a.y;
+            let len_sq = dx * dx + dy * dy;
+            if len_sq < 1e-10 {
+                return 0.0;
+            }
+            let t = ((p.x - along.a.x) * dx + (p.y - along.a.y) * dy) / len_sq;
+            t.clamp(0.0, 1.0) * strength
+        }
+        Force::Compression {
+            axis,
+            width,
+            strength,
+        } => {
+            let dist = axis.distance(&p);
+            let t = (dist / width.max(0.0001)).min(1.0);
+            strength * (1.0 - smoothstep(t))
+        }
+    }
+}
+
+pub fn field_at(forces: &[Force], x: f32, y: f32) -> f32 {
+    let mut sum = 0.0_f32;
+    for f in forces {
+        sum += eval_force(f, x, y);
+    }
+    sum.clamp(0.0, 1.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -184,7 +254,12 @@ pub fn density_at(params: &Params, nx: f32, ny: f32, frame: i64) -> f32 {
         0.0
     };
 
-    (singularity + warp).clamp(0.0, 1.0)
+    let mut forces_sum = 0.0_f32;
+    for f in &params.field.forces {
+        forces_sum += eval_force(f, nx, ny);
+    }
+
+    (singularity + warp + forces_sum).clamp(0.0, 1.0)
 }
 
 fn value_noise(x: f32, y: f32, seed: u64) -> f32 {
@@ -254,6 +329,69 @@ mod tests {
             assert!(d.y >= 0.0 && d.y <= params.canvas.height);
             assert!(d.r > 0.0);
         }
+    }
+
+    #[test]
+    fn attractor_peaks_at_center() {
+        let f = Force::Attractor {
+            center: Point::new(0.5, 0.5),
+            strength: 1.0,
+            falloff: 10.0,
+        };
+        let center = eval_force(&f, 0.5, 0.5);
+        let edge = eval_force(&f, 0.0, 0.0);
+        assert!((center - 1.0).abs() < 1e-6);
+        assert!(edge < center);
+    }
+
+    #[test]
+    fn gradient_increases_along_direction() {
+        let f = Force::Gradient {
+            along: Line::new(Point::new(0.0, 0.5), Point::new(1.0, 0.5)),
+            strength: 1.0,
+        };
+        let lo = eval_force(&f, 0.1, 0.5);
+        let hi = eval_force(&f, 0.9, 0.5);
+        assert!(hi > lo);
+    }
+
+    #[test]
+    fn compression_peaks_on_center_line() {
+        let f = Force::Compression {
+            axis: Line::new(Point::new(0.0, 0.5), Point::new(1.0, 0.5)),
+            width: 0.1,
+            strength: 1.0,
+        };
+        let on_line = eval_force(&f, 0.5, 0.5);
+        let off_line = eval_force(&f, 0.5, 0.0);
+        assert!((on_line - 1.0).abs() < 1e-6);
+        assert!(off_line < on_line);
+    }
+
+    #[test]
+    fn field_at_clamps_to_unit() {
+        let forces = vec![
+            Force::Attractor { center: Point::new(0.5, 0.5), strength: 0.8, falloff: 1.0 },
+            Force::Attractor { center: Point::new(0.5, 0.5), strength: 0.8, falloff: 1.0 },
+        ];
+        let val = field_at(&forces, 0.5, 0.5);
+        assert!((val - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn forces_affect_density() {
+        let mut params = Params::default();
+        params.field.singularity.strength = 0.0;
+        params.field.warp_amount = 0.0;
+        let empty_density = density_at(&params, 0.5, 0.5, 0);
+
+        params.field.forces = vec![Force::Attractor {
+            center: Point::new(0.5, 0.5),
+            strength: 1.0,
+            falloff: 10.0,
+        }];
+        let with_force = density_at(&params, 0.5, 0.5, 0);
+        assert!(with_force > empty_density);
     }
 
     #[test]
