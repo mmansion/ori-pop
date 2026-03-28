@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 oripop-core = { path = "../crates/oripop-core" }
+oripop-3d   = { path = "../crates/oripop-3d" }
 rand.workspace = true
 
 [[bin]]
@@ -31,3 +32,7 @@ path = "forces-demo.rs"
 [[bin]]
 name = "interactive-demo"
 path = "interactive-demo.rs"
+
+[[bin]]
+name = "textured-3d-demo"
+path = "textured-3d-demo.rs"

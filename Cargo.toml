@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/oripop-core",
+  "crates/oripop-3d",
   "sketches",
 ]
 resolver = "2"

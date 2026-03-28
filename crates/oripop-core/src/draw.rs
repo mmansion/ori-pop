@@ -808,6 +808,69 @@ impl log::Log for Logger {
     fn flush(&self) {}
 }
 
+// ── Integration API for oripop-3d ───────────────────────
+//
+// These functions are intentionally NOT re-exported from `prelude`.
+// They exist so that oripop-3d's combined runner can share the same
+// thread-local drawing state as oripop-core's 2D API.
+
+/// The WGSL source of the 2D drawing shader.
+/// oripop-3d embeds this to create a compatible 2D overlay pipeline.
+pub const SHADER_2D_WGSL: &str = include_str!("shader.wgsl");
+
+/// Returns the vertex buffer layout for the 2D drawing pipeline.
+/// oripop-3d uses this to wire up a matching vertex buffer in its renderer.
+pub fn vertex_2d_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+    Vertex::LAYOUT
+}
+
+/// Read the configured window settings without starting the event loop.
+/// Returns `(width, height, title, msaa_samples)`.
+pub fn settings() -> (u32, u32, String, u32) {
+    with_ctx(|ctx| (ctx.width, ctx.height, ctx.title.clone(), ctx.msaa_samples))
+}
+
+/// Reset per-frame 2D state (vertex list, frame counter, matrix stack).
+/// Call once at the start of each frame in oripop-3d's event loop.
+pub fn begin_frame() {
+    with_ctx(|ctx| ctx.reset_frame());
+}
+
+/// Drain the accumulated 2D draw data for this frame.
+///
+/// Returns the background clear colour and raw vertex bytes.
+/// Each vertex is 24 bytes: `[f32; 2]` position at offset 0,
+/// `[f32; 4]` RGBA colour at offset 8.
+pub fn take_2d_vertices() -> (wgpu::Color, Vec<u8>) {
+    with_ctx(|ctx| {
+        let bg    = ctx.bg;
+        let bytes = bytemuck::cast_slice(&ctx.vertices).to_vec();
+        ctx.vertices.clear();
+        (bg, bytes)
+    })
+}
+
+/// Update mouse position and button state.
+/// Call from oripop-3d's event loop so that `mouse_x()`, `mouse_y()`,
+/// and `mouse_pressed()` return correct values inside draw callbacks.
+pub fn set_mouse(x: f32, y: f32, pressed: bool) {
+    with_ctx(|ctx| {
+        ctx.mouse_x       = x;
+        ctx.mouse_y       = y;
+        ctx.mouse_pressed = pressed;
+    });
+}
+
+/// Update keyboard state.
+/// Call from oripop-3d's event loop so that `key_pressed()` and `key()`
+/// return correct values inside draw callbacks.
+pub fn set_key(pressed: bool, code: char) {
+    with_ctx(|ctx| {
+        ctx.key_pressed = pressed;
+        if pressed { ctx.key_code = code; }
+    });
+}
+
 // ── run() ───────────────────────────────────────────────
 
 /// Open the window and start the draw loop.
