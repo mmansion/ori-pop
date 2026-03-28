@@ -1224,6 +1224,7 @@ dependencies = [
  "glam",
  "log",
  "oripop-core",
+ "oripop-math",
  "pollster",
  "raw-window-handle",
  "wgpu",

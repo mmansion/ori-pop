@@ -3,6 +3,10 @@
 //! All primitives use the **Z-up right-handed** convention:
 //! X = right, Y = forward/depth, Z = up.
 //! The XY plane is the ground plane (fabrication bed).
+//!
+//! [`MeshKind::Sphere`] and [`MeshKind::Plane`] are now generated through
+//! `oripop-math`'s parametric surface layer — the same mathematical objects
+//! that feed the design tree, curvature analysis, and fabrication export.
 
 use bytemuck::{Pod, Zeroable};
 use std::f32::consts::PI;
@@ -51,6 +55,23 @@ pub struct Mesh {
     pub indices:  Vec<u32>,
 }
 
+impl Mesh {
+    /// Convert an `oripop-math` [`CpuMesh`] into a GPU-ready [`Mesh`].
+    ///
+    /// This is the bridge between the parametric math layer and the renderer.
+    /// The interleaved `Vertex3D` layout required by the wgpu pipeline is built
+    /// here from the separate position / normal / UV arrays of `CpuMesh`.
+    pub fn from_math(cpu: oripop_math::CpuMesh) -> Self {
+        let vertices = cpu.positions
+            .into_iter()
+            .zip(cpu.normals)
+            .zip(cpu.uvs)
+            .map(|((position, normal), uv)| Vertex3D { position, normal, uv })
+            .collect();
+        Self { vertices, indices: cpu.indices }
+    }
+}
+
 // ── Primitive kind ───────────────────────────────────────────────────────────
 
 /// Built-in mesh primitive that the renderer pre-uploads to the GPU at startup.
@@ -64,9 +85,27 @@ pub enum MeshKind {
 impl MeshKind {
     pub(crate) fn build(self) -> Mesh {
         match self {
-            MeshKind::Sphere => uv_sphere(1.0, 48, 32),
-            MeshKind::Cube   => cube(1.0),
-            MeshKind::Plane  => plane(1.0),
+            // Sphere and Plane are generated through oripop-math's parametric
+            // surface layer — the same objects used for design-tree evaluation,
+            // curvature analysis, and fabrication export.
+            MeshKind::Sphere => {
+                let cpu = oripop_math::CpuMesh::from_surface(
+                    &oripop_math::UvSphere::new(1.0),
+                    64,  // sectors (longitude divisions)
+                    48,  // stacks  (latitude divisions)
+                );
+                Mesh::from_math(cpu)
+            }
+            MeshKind::Plane => {
+                let cpu = oripop_math::CpuMesh::from_surface(
+                    &oripop_math::Plane::square(1.0),
+                    1, 1,
+                );
+                Mesh::from_math(cpu)
+            }
+            // Cube remains hand-built — a cube is not a smooth parametric surface.
+            // A proper CSG / SDF cube will replace this when oripop-geo lands.
+            MeshKind::Cube => cube(1.0),
         }
     }
 }
