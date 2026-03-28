@@ -191,6 +191,41 @@ mind: named nodes, typed ports, serializable parameters, observable outputs.
 
 ---
 
+## Interchange Format — glTF
+
+**glTF (GL Transmission Format)** is the interchange format for ori-pop designs.
+Developed by the Khronos Group, it is the universal 3D transmission format —
+readable by Blender, Houdini, Rhino, three.js, visionOS, NVIDIA Omniverse, and
+every modern WebGPU/WebGL renderer. Often called "the JPEG of 3D."
+
+ori-pop exports `.glb` (binary glTF) as its primary portable format. The file
+carries:
+
+- **Geometry** — tessellated mesh, normals, UVs
+- **Materials** — PBR material with the baked generative texture
+- **Scene graph** — named node hierarchy with transforms
+- **DesignTree** — the full parametric description, embedded in each node's
+  `extras.oripop` field as JSON
+
+The `extras` embedding is the key detail. A standard glTF viewer shows the
+baked geometry and texture. An ori-pop reader reconstructs the complete
+`DesignTree` — every parameter, every generative function, every fabrication
+intent — and restores the live, editable, recomputable design.
+
+**The round-trip is lossless.** Open any `.glb` in ori-pop and get the full
+mathematical object back, not just a baked snapshot.
+
+This makes every ori-pop export simultaneously:
+- A preview asset for any 3D tool or web viewer
+- A complete, recoverable parametric design
+- An input to NVIDIA Omniverse, AI generative tools, and spatial computing (XR)
+
+USD (Universal Scene Description, NVIDIA Omniverse's format) is a future export
+target. The Rust ecosystem for USD is not yet mature; glTF provides equivalent
+interoperability today with excellent tooling.
+
+---
+
 ## What It Is Not
 
 - Not a game engine (though it borrows real-time rendering from one)

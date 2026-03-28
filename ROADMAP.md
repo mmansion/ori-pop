@@ -42,23 +42,48 @@ All values are editable with drag inputs and sliders in real time.
 
 ## 2. `oripop-math` — GPU-Free Geometry Kernel
 
-**Status: planned**
+**Status: in progress**
 
 A new crate with **no GPU dependency** (`wgpu`, `winit` not in `Cargo.toml`).
 Every other crate — physics, geometry, evolutionary, fabrication — depends on this
 crate for shared types. Because it carries no GPU weight, it can be tested
 headlessly on any machine, including CI.
 
-Core types:
+### The Design Tree
+
+The foundational data structure of ori-pop. A `DesignTree` is the complete
+mathematical description of a design — every surface, every generative field,
+every fabrication intent — as a directed acyclic graph of typed, named, serializable
+nodes.
+
+A design in ori-pop is a **mathematical object**: fully defined, portable,
+deterministic. Given the same `DesignTree`, you get the same object. Every time.
+On any machine. In any material. The material, scale, and fabrication method are
+transformations applied to that object — not properties stored in it.
+
+Key properties:
+- **Serializable** — RON (native) and JSON (agent/interop). Round-trips losslessly.
+- **Diffable** — meaningful git diffs between design iterations.
+- **Agent-readable** — named nodes, typed ports, documented parameters. An AI
+  agent reads and writes the tree; it never touches the renderer directly.
+- **Evaluable** — each node is a pure function. Same inputs → same output. No
+  hidden state.
+
+Core node types: `Surface`, `UvField`, `Material`, `Mesh`, `Toolpath`, `Output`.
+
+### Core geometry types:
+- `DesignTree` — the complete parametric design as a serializable DAG.
+- `Node` / `Edge` / `Port` — typed graph primitives.
+- `Value` / `Param` — typed, named, documented parameter atoms.
+- `Surface` trait — parametric surface: `(u,v) → Vec3`, `normal`, `curvature`.
+  Implementations: `UvSphere`, `Plane`, `Cylinder`, `Torus`, `RuledSurface`.
+- `PrincipalCurvatures` — k1, k2 and their directions. Determines developability.
 - `Frame` — coordinate frame (origin + orthonormal basis, Z-up). Represents robot
   end-effector poses, print-bed orientation, workpiece datums, joint frames.
-- `Mesh` — CPU-side vertex/normal/UV/index data. The canonical geometric
-  representation. Separate from the GPU-side `GpuMesh` in `oripop-3d`, which is
-  just a cached upload.
-- `BoundingBox` / `BoundingVolume` — AABB and OBB in Z-up space.
+- `CpuMesh` — vertex/normal/UV/index data. The canonical geometric representation.
+  Separate from the GPU-side `GpuMesh` in `oripop-3d`, which is a cached upload.
+- `BoundingBox` — AABB in Z-up space.
 - `Ray` — for picking, intersection queries, and SDF ray-marching.
-- `Plane` — `ax + by + cz + d = 0`.
-- `Transform` — wraps `Mat4`, enforces the Z-up convention.
 - `Sdf` — see item 5 below.
 
 The existing `Point`, `Line`, and `Bezier` types in `oripop-core` will migrate
@@ -275,9 +300,22 @@ Bridges generative models to physical manufacturing.
 - **Printability analysis** — overhang angle heatmap (surface normal vs. Z-up
   build direction) computed on GPU, visualized as a texture overlay.
 - **Slicing** — plane-mesh intersection per layer, one compute dispatch per layer.
-- **Export** — STL (triangle soup), 3MF (materials, colors, lattice metadata;
-  preferred by Bambu, Prusa, Cura), OBJ.
-- **G-code** — CPU-side, from slice data.
+- **Toolpath generation** — robot painting arm strokes derived from the UV field.
+  Stroke direction, density, and spacing encoded in UV space, following the
+  surface curvature.
+- **Developable strip unrolling** — for sheet material (paper, leather, metal):
+  unroll ruled/developable surfaces to flat cut patterns with fold/score lines
+  derived from the UV field. Export as SVG or DXF.
+- **Export formats:**
+  - **glTF / GLB** — primary portable format. Geometry + materials + full
+    `DesignTree` in `extras`. Round-trip lossless. Compatible with Blender,
+    Houdini, Rhino, three.js, visionOS, NVIDIA Omniverse.
+  - **STL** — triangle soup for 3D printing slicers.
+  - **3MF** — materials, colors, lattice metadata (Bambu, Prusa, Cura).
+  - **SVG / DXF** — 2D cut patterns, plotter output, fold lines.
+  - **PNG / EXR** — high-resolution raster of the UV field (fine art print).
+  - **G-code** — CPU-side, from slice data.
+  - **USD** — future target when Rust bindings mature (NVIDIA Omniverse native).
 
 Depends on: `oripop-math`, `oripop-geo`.
 
