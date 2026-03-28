@@ -107,7 +107,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let t = clamp(n, 0.0, 1.0);
 
     // Iron-mineral palette — deep cool blues through warm ochre-orange.
-    // a + b stays below 0.6 per channel so the texture never blows out white.
+    // a + b stays below 0.6 per channel so the texture never blows out.
     let color = palette(
         t,
         vec3<f32>(0.28, 0.32, 0.38),   // midpoint: cool grey-blue
