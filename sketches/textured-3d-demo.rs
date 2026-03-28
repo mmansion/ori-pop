@@ -1,8 +1,13 @@
-//! Generative-texture 3D demo.
+//! Generative-texture 3D demo — Z-up coordinate system.
 //!
 //! A UV sphere and a ground plane are rendered with a GPU-generated texture
 //! (domain-warped FBM noise, animated in real time).  A lightweight 2D
 //! overlay — drawn with the normal oripop-core API — is composited on top.
+//!
+//! Coordinate convention: Z-up right-handed.
+//!   X = right, Y = depth/forward, Z = up, XY = ground plane.
+//!
+//! Press Tab to toggle the live inspector panel.
 //!
 //! Run with:
 //!   cargo run --bin textured-3d-demo
@@ -23,54 +28,58 @@ fn draw(scene: &mut Scene3D) {
     background(6, 4, 14);
 
     // ── Texture generation ──────────────────────────────────────────────────
-    // These params are written into the compute shader uniform every frame.
     scene.gen.frequency     = 3.0;
     scene.gen.octaves       = 6;
     scene.gen.warp_strength = 2.0 + 0.6 * (t * 0.25).sin();
 
-    // ── Camera — slow orbit around the scene ────────────────────────────────
+    // ── Camera — slow orbit, Z-up ───────────────────────────────────────────
+    // Eye orbits on an XY circle at a fixed Z height, always looking at origin.
     let orbit_r = 5.0_f32;
-    let orbit_y = 1.8_f32 + 0.4 * (t * 0.18).sin();
-    scene.camera.eye    = Vec3::new(orbit_r * (t * 0.15).sin(), orbit_y, orbit_r * (t * 0.15).cos());
-    scene.camera.target = Vec3::new(0.0, 0.2, 0.0);
+    let orbit_z = 2.2_f32 + 0.4 * (t * 0.18).sin();
+    scene.camera.eye    = Vec3::new(
+        orbit_r * (t * 0.15).sin(),
+        orbit_r * (t * 0.15).cos(),
+        orbit_z,
+    );
+    scene.camera.target = Vec3::new(0.0, 0.0, 0.2);
     scene.camera.fov_y  = std::f32::consts::FRAC_PI_4;
 
-    // ── Light ───────────────────────────────────────────────────────────────
+    // ── Light — from front-right-above in Z-up space ────────────────────────
     scene.light_dir = Vec3::new(
         (t * 0.3).sin(),
-        2.0,
-        (t * 0.3).cos(),
+        -1.0,
+        (t * 0.3).cos() + 1.5,
     );
 
     // ── Scene objects ───────────────────────────────────────────────────────
     scene.clear();
 
-    // Sphere — slowly rotating
-    scene.add(
+    // Sphere — slowly spinning around Z axis.
+    scene.add_named(
+        "Sphere",
         MeshKind::Sphere,
-        Mat4::from_rotation_y(t * 0.35),
+        Mat4::from_rotation_z(t * 0.35),
     );
 
-    // Ground plane — scaled up, offset downward, slightly different seed
+    // Ground plane — scaled up, translated down on Z, slightly different seed.
     scene.gen.seed = 0.5;
-    scene.add(
+    scene.add_named(
+        "Ground",
         MeshKind::Plane,
-        Mat4::from_scale(Vec3::splat(6.0))
-            * Mat4::from_translation(Vec3::new(0.0, -1.0, 0.0)),
+        Mat4::from_translation(Vec3::new(0.0, 0.0, -1.1))
+            * Mat4::from_scale(Vec3::splat(6.0)),
     );
-    scene.gen.seed = 0.0; // reset for next frame
+    scene.gen.seed = 0.0;
 
     // ── 2D overlay ──────────────────────────────────────────────────────────
     let w = scene.width;
     let h = scene.height;
 
-    // Thin horizontal rule at the bottom
     no_fill();
     stroke_weight(1.0);
     stroke_a(160, 140, 220, 120);
     line(24.0, h - 28.0, w - 24.0, h - 28.0);
 
-    // Tick marks
     stroke_a(120, 100, 180, 80);
     let ticks = 32_u32;
     for i in 0..=ticks {
@@ -86,16 +95,8 @@ fn draw(scene: &mut Scene3D) {
     stroke_weight(1.5);
     stroke_a(180, 160, 240, 160);
 
-    // top-left
-    line(bx,      by,      bx + bl, by);
-    line(bx,      by,      bx,      by + bl);
-    // top-right
-    line(w - bx,       by,      w - bx - bl, by);
-    line(w - bx,       by,      w - bx,      by + bl);
-    // bottom-left
-    line(bx,      h - by, bx + bl, h - by);
-    line(bx,      h - by, bx,      h - by - bl);
-    // bottom-right
-    line(w - bx,       h - by, w - bx - bl, h - by);
-    line(w - bx,       h - by, w - bx,      h - by - bl);
+    line(bx,      by,      bx + bl, by     );  line(bx,      by,      bx,      by + bl);
+    line(w - bx,  by,      w-bx-bl, by     );  line(w - bx,  by,      w - bx,  by + bl);
+    line(bx,      h - by,  bx + bl, h - by );  line(bx,      h - by,  bx,      h-by-bl);
+    line(w - bx,  h - by,  w-bx-bl, h - by );  line(w - bx,  h - by,  w - bx,  h-by-bl);
 }

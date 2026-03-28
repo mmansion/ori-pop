@@ -1,0 +1,300 @@
+# ORI-POP Roadmap
+
+This document captures the intended long-term direction of the ori-pop framework.
+It is a living record of architectural decisions made early so that patterns stay
+consistent as the codebase grows.
+
+The guiding ambition: a GPU-first creative-coding and generative-design framework
+that serves both art-making and real fabrication — robotic, CNC, and 3D-printed
+output from the same generative models used to produce visuals.
+
+---
+
+## 1. Coordinate System — Z-Up Right-Handed
+
+**Status: done**
+
+Adopt the CAD / robotics / 3D-printing standard: Z is up, XY is the build plane,
+right-handed orientation (ISO 80000-2, ROS, STEP, STL, Rhino, Grasshopper,
+FreeCAD).
+
+The current codebase uses Y-up (OpenGL / glam default). Switching early, before
+sketches accumulate, is far cheaper than retrofitting later.
+
+Changes required:
+- `Camera::default()` — `up: Vec3::Z`, eye position moved to `(5, -5, 3)`.
+- Mesh generators (`uv_sphere`, `cube`, `plane`) regenerated with Z as vertical.
+- Default `light_dir` updated to Z-up space.
+- `Scene3D` documentation updated throughout.
+
+---
+
+## 1a. egui Inspector Panel
+
+**Status: done**
+
+A live inspector panel (Tab key toggles) built on egui 0.33 renders as a fourth GPU
+pass on top of every 3D frame.  Shows scene time, camera (eye, target, FOV),
+light direction, texture-gen parameters, and a list of named scene objects.
+All values are editable with drag inputs and sliders in real time.
+
+---
+
+## 2. `oripop-math` — GPU-Free Geometry Kernel
+
+**Status: planned**
+
+A new crate with **no GPU dependency** (`wgpu`, `winit` not in `Cargo.toml`).
+Every other crate — physics, geometry, evolutionary, fabrication — depends on this
+crate for shared types. Because it carries no GPU weight, it can be tested
+headlessly on any machine, including CI.
+
+Core types:
+- `Frame` — coordinate frame (origin + orthonormal basis, Z-up). Represents robot
+  end-effector poses, print-bed orientation, workpiece datums, joint frames.
+- `Mesh` — CPU-side vertex/normal/UV/index data. The canonical geometric
+  representation. Separate from the GPU-side `GpuMesh` in `oripop-3d`, which is
+  just a cached upload.
+- `BoundingBox` / `BoundingVolume` — AABB and OBB in Z-up space.
+- `Ray` — for picking, intersection queries, and SDF ray-marching.
+- `Plane` — `ax + by + cz + d = 0`.
+- `Transform` — wraps `Mat4`, enforces the Z-up convention.
+- `Sdf` — see item 5 below.
+
+The existing `Point`, `Line`, and `Bezier` types in `oripop-core` will migrate
+here and be promoted to full 3D types.
+
+---
+
+## 3. `oripop-geo` — Computational Geometry
+
+**Status: planned**
+
+Geometric algorithms, a mix of CPU and GPU compute implementations.
+
+| Operation | Method |
+|---|---|
+| Mesh boolean (CSG) | SDF-based: `union = min(a,b)`, `subtract = max(a,-b)` |
+| Convex hull (3D) | QuickHull, parallelizable on compute |
+| Delaunay / Voronoi | Jump flooding algorithm — GPU native |
+| Marching cubes | GPU compute — extracts mesh from SDF volume |
+| Surface sampling | Poisson disk sampling via compute |
+| Normal recomputation | Per-face then per-vertex reduction pass |
+| Laplacian smoothing | Iterative compute pass |
+| Curvature estimation | Principal curvatures from the Hessian of the SDF |
+| Arc length reparameterization | Lookup table precomputed on CPU |
+
+Depends on: `oripop-math`.
+
+---
+
+## 4. Surface-Aware Texture Generation
+
+**Status: planned**
+
+Generative 2D textures that are parameterized in the same `(u, v)` coordinate
+system as the 3D surface they are applied to, ensuring mathematical alignment
+with no projection distortion.
+
+### The Core Idea
+
+A parametric surface is a function `surface(u, v) → Vec3`. If the texture is also
+generated as a function of `(u, v)` — sharing the same coordinate system — the
+alignment is mathematically guaranteed. The texture is not projected onto the
+surface from outside; it grows from the same parameterization that defines the
+geometry.
+
+### Levels of Alignment
+
+**Level 1 — UV sampling (current state).** The compute shader generates a flat 2D
+image without knowledge of the 3D shape. The mesh samples it by UV. Works for
+abstract patterns; distortion follows from the UV layout.
+
+**Level 2 — Surface-parameterized generation.** The compute shader receives
+surface-specific uniforms: profile curve, principal curvatures, arc length
+reparameterization. The noise or pattern is generated as a function of surface
+parameters, not flat UV. The texture and geometry share a coordinate system.
+
+**Level 3 — Simulation on the surface.** PDEs such as Gray-Scott
+reaction-diffusion (Turing patterns, branching, spots) run directly in UV space
+with isotropic diffusion in surface coordinates. This is how biological surface
+patterns actually form — they are governed by geometry.
+
+### Seam Handling
+
+- **Seamless 4D noise** — for closed surfaces (spheres, tori), map `(u, v)` to a
+  point on a 4D torus `(cos 2πu, sin 2πu, cos 2πv, sin 2πv)` and evaluate 4D
+  noise. Periodic in both directions, no seam.
+- **Triplanar mapping** — three world-axis projections blended by surface normal.
+  No UV needed. Useful fallback for irregular geometry.
+
+### Fabrication Applications
+
+- Material gradient in UV space → multi-material print color zoning.
+- Reaction-diffusion pattern → sparse vs. dense infill tied to stress lines.
+- Surface toolpath pattern → CNC cut directions aligned to dominant surface
+  feature, encoded in UV.
+- Voronoi cells in UV → surface holes after boolean subtraction, forming
+  latticed shells with patterns native to the surface form.
+
+Depends on: `oripop-math` (parametric surface types), `oripop-geo` (curvature
+computation, arc length reparameterization).
+
+---
+
+## 5. `Sdf` — Signed Distance Field Primitives
+
+**Status: planned (part of `oripop-math`)**
+
+An SDF is a function `f(point) → f32` where the sign indicates inside (negative),
+surface (zero), or outside (positive). Boolean CSG reduces to `min`/`max`
+arithmetic on two distance values. No polygon clipping, no mesh repair, no
+degenerate triangles.
+
+```
+union(a, b)     = min(a, b)
+subtract(a, b)  = max(a, -b)
+intersect(a, b) = max(a, b)
+```
+
+The `Sdf` enum in `oripop-math` is a pure data structure (no GPU dependency).
+It describes a shape tree that can be serialized, logged, and passed between
+the genetic optimizer and the geometry kernel.
+
+Primitives:
+- `Sphere`, `Box`, `Cylinder`, `Torus`, `Cone`
+- `Gyroid { scale, thickness }` — triply periodic minimal surface; the dominant
+  FDM/SLA infill structure. Load-bearing in all directions, first-class here.
+
+Combinators:
+- `Union`, `Subtract`, `Intersect`
+
+Modifiers:
+- `Shell(sdf, wall_thickness)` — hollow with uniform wall
+- `Offset(sdf, amount)` — morphological expand / contract (fit tolerances)
+- `Twist(sdf, rate)`
+- `Bend(sdf, rate)`
+
+Evaluators (added in later crates):
+- CPU evaluator in `oripop-geo`: `sdf.distance(point: Vec3) → f32`
+- GPU evaluator in `oripop-3d`: compiles the tree to a WGSL compute shader
+  dispatch; marching cubes extracts a renderable mesh.
+
+---
+
+## 6. `ComputeStage` — Extensible GPU Pipeline
+
+**Status: planned (in `oripop-3d`)**
+
+The current three-pass frame (compute → 3D → 2D overlay) has the passes baked
+into `renderer.rs`. Adding physics, SDF evaluation, or evolutionary fitness
+evaluation would require rewriting the renderer each time.
+
+A `ComputeStage` trait lets each system register its own GPU passes:
+
+```rust
+pub trait ComputeStage: Send {
+    fn init(&mut self, device: &wgpu::Device, queue: &wgpu::Queue);
+    fn encode(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue);
+}
+```
+
+The renderer holds `Vec<Box<dyn ComputeStage>>` and encodes them in order before
+the 3D pass. The texture generation that already exists becomes the first stage.
+Physics integration, SDF evaluation, and evolutionary fitness evaluation each
+become additional stages, isolated and composable.
+
+From a sketch:
+```rust
+fn main() {
+    size(960, 640);
+    run3d_with(draw)
+        .add_stage(TextureGen::default())
+        .add_stage(PhysicsIntegrator::new(1000))
+        .start();
+}
+```
+
+---
+
+## 7. `oripop-physics` — GPU Physics Simulation
+
+**Status: planned**
+
+Two complementary physics backends:
+
+**Rigid body** — [Rapier](https://rapier.rs/) integration (pure Rust, CPU).
+Handles collision detection, joints, and constraints correctly. Visualization
+passes results to `oripop-3d` each frame.
+
+**Particles / soft body / cloth / fluid** — Position-Based Dynamics (PBD) on GPU
+compute. Each PBD iteration is a compute dispatch; the output position buffer
+binds directly as a vertex buffer for rendering with no CPU readback.
+
+Fluid: SPH (Smoothed Particle Hydrodynamics) or LBM (Lattice-Boltzmann), both
+GPU-native.
+
+Gravity is `(0, 0, -9.81)` — Z-down, consistent with the Z-up workspace.
+
+Depends on: `oripop-math`, `oripop-3d` (for `ComputeStage`).
+
+---
+
+## 8. `oripop-evo` — Genetic / Evolutionary Optimization
+
+**Status: planned**
+
+GPU-parallel evaluation of entire populations in a single compute dispatch.
+The genome is a flat `f32` array encoding SDF parameters, force field strengths,
+structural lattice parameters, or any other continuous design variable.
+
+Frame loop:
+1. Population buffer lives on GPU between generations.
+2. Compute pass: evaluate fitness for all N individuals in parallel.
+3. CPU readback: read `fitness[N]`, run selection, crossover, mutation.
+4. Write new population to GPU buffer.
+5. Repeat.
+
+The fitness function is a WGSL compute shader. For fabrication objectives:
+minimize material volume, maximize stiffness-to-weight, enforce minimum wall
+thickness, penalize overhangs beyond a threshold angle — all evaluable per-voxel
+in the SDF volume.
+
+Depends on: `oripop-math`, `oripop-geo`.
+
+---
+
+## 9. `oripop-fab` — Fabrication Output
+
+**Status: planned**
+
+Bridges generative models to physical manufacturing.
+
+- **Mesh extraction** — marching cubes / dual contouring on GPU; produces
+  watertight meshes from SDF volumes.
+- **Printability analysis** — overhang angle heatmap (surface normal vs. Z-up
+  build direction) computed on GPU, visualized as a texture overlay.
+- **Slicing** — plane-mesh intersection per layer, one compute dispatch per layer.
+- **Export** — STL (triangle soup), 3MF (materials, colors, lattice metadata;
+  preferred by Bambu, Prusa, Cura), OBJ.
+- **G-code** — CPU-side, from slice data.
+
+Depends on: `oripop-math`, `oripop-geo`.
+
+---
+
+## Dependency Graph
+
+```
+oripop-math   (no GPU — pure Rust geometry)
+    ├── oripop-geo      (computational geometry, some GPU compute)
+    │       ├── oripop-evo   (genetic optimization)
+    │       └── oripop-fab   (fabrication output)
+    ├── oripop-physics  (simulation)
+    └── oripop-3d       (rendering / visualization)
+            └── oripop-core  (2D drawing API)
+```
+
+`oripop-core` remains standalone. `oripop-3d` depends on both `oripop-core`
+and `oripop-math`. All higher-level crates depend on `oripop-math` but not
+necessarily on each other.

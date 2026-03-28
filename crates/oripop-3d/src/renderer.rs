@@ -1,7 +1,10 @@
-//! wgpu renderer that drives three passes per frame:
-//!   1. Compute pass  — generative texture (domain-warped FBM, GPU only)
-//!   2. 3D render pass — meshes with depth, MVP transform, texture sampling
-//!   3. 2D overlay pass — alpha-blended 2D vertices from oripop-core
+//! wgpu renderer that drives three GPU passes per frame:
+//!   1. Compute pass    — generative texture (domain-warped FBM, GPU only)
+//!   2. 3D render pass  — meshes with depth, MVP transform, texture sampling
+//!   3. 2D overlay pass — alpha-blended 2D vertices from oripop-core + MSAA resolve
+//!
+//! A fourth egui pass is driven externally by `lib.rs` via `render_egui()`,
+//! keeping the egui renderer separate from the core pipeline.
 
 use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
@@ -81,7 +84,7 @@ pub(crate) struct Renderer {
     pub device:     wgpu::Device,
     pub queue:      wgpu::Queue,
     config:         wgpu::SurfaceConfiguration,
-    surface_format: wgpu::TextureFormat,
+    pub surface_format: wgpu::TextureFormat,
     pub scale_factor: f64,
 
     // MSAA
@@ -561,6 +564,13 @@ impl Renderer {
         }
     }
 
+    // ── Accessors ─────────────────────────────────────────────────────────────
+
+    /// Physical framebuffer size in pixels (updated on every resize).
+    pub fn phys_size(&self) -> [u32; 2] {
+        [self.config.width, self.config.height]
+    }
+
     // ── Resize ────────────────────────────────────────────────────────────────
 
     pub fn resize(&mut self, phys_w: u32, phys_h: u32) {
@@ -587,12 +597,17 @@ impl Renderer {
 
     // ── Render ────────────────────────────────────────────────────────────────
 
+    /// Render one frame: compute → 3D → 2D overlay → MSAA resolve.
+    ///
+    /// Returns the acquired [`wgpu::SurfaceTexture`] **without presenting** it,
+    /// so the caller can composite additional passes (e.g. egui) before calling
+    /// `output.present()` exactly once per frame.
     pub fn render(
         &self,
         scene:       &Scene3D,
         bg:          wgpu::Color,
         vertices_2d: &[u8],
-    ) -> Result<(), wgpu::SurfaceError> {
+    ) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
         let output       = self.surface.get_current_texture()?;
         let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -746,7 +761,67 @@ impl Renderer {
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
-        Ok(())
+        Ok(output) // caller presents after any additional passes
+    }
+
+    /// Composite an egui frame onto `output` acquired by a preceding [`render`] call.
+    ///
+    /// Takes **owned** tessellated data so that all internal references have the
+    /// function's own lifetime — this satisfies egui_wgpu 0.33's `RenderPass<'static>`
+    /// requirement without any caller-side `'static` constraint.
+    ///
+    /// Does **not** call `output.present()`.  The caller presents exactly once,
+    /// after all passes for the frame have been submitted.
+    pub fn render_egui(
+        &self,
+        output:         &wgpu::SurfaceTexture,
+        egui_renderer:  &mut egui_wgpu::Renderer,
+        paint_jobs:      Vec<egui::ClippedPrimitive>,
+        textures_delta:  egui::TexturesDelta,
+        screen:          egui_wgpu::ScreenDescriptor,
+    ) {
+        let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        for (id, delta) in &textures_delta.set {
+            egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
+        }
+
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("egui frame") },
+        );
+
+        let _staging_buffers = egui_renderer.update_buffers(
+            &self.device, &self.queue, &mut encoder, &paint_jobs, &screen,
+        );
+
+        {
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view:           &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes:         None,
+                occlusion_query_set:      None,
+            });
+            // egui_wgpu 0.33 requires RenderPass<'static>; wgpu 27 provides
+            // forget_lifetime() for exactly this use case.  The explicit drop below
+            // ensures the pass is released before encoder.finish().
+            let mut pass_static = pass.forget_lifetime();
+            egui_renderer.render(&mut pass_static, &paint_jobs, &screen);
+            drop(pass_static);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        for id in &textures_delta.free {
+            egui_renderer.free_texture(id);
+        }
     }
 }

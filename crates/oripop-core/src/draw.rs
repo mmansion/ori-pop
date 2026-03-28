@@ -32,10 +32,11 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use winit::{
+    application::ApplicationHandler,
     dpi::LogicalSize,
-    event::{ElementState, Event, WindowEvent},
+    event::{ElementState, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    window::{Window, WindowId},
 };
 
 // ── Vertex ──────────────────────────────────────────────
@@ -873,6 +874,100 @@ pub fn set_key(pressed: bool, code: char) {
 
 // ── run() ───────────────────────────────────────────────
 
+struct Runner2D {
+    draw_fn:      fn(),
+    window_attrs: winit::window::WindowAttributes,
+    msaa:         u32,
+    window:       Option<Arc<Window>>,
+    gpu:          Option<Gpu>,
+}
+
+impl ApplicationHandler for Runner2D {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        let window = Arc::new(
+            event_loop
+                .create_window(self.window_attrs.clone())
+                .expect("create window"),
+        );
+        let phys    = window.inner_size();
+        let (w, h)  = with_ctx(|ctx| (ctx.width, ctx.height));
+        self.gpu    = Some(pollster::block_on(init_gpu(
+            Arc::clone(&window), phys.width, phys.height, w, h, self.msaa,
+        )));
+        self.window = Some(window);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        _: WindowId,
+        event: WindowEvent,
+    ) {
+        let (Some(window), Some(gpu)) = (self.window.as_ref(), self.gpu.as_mut()) else { return };
+
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+
+            WindowEvent::Resized(sz) => {
+                gpu.resize(sz.width, sz.height);
+                window.request_redraw();
+            }
+
+            WindowEvent::RedrawRequested => {
+                with_ctx(|ctx| ctx.reset_frame());
+                (self.draw_fn)();
+                let (bg, vertices) =
+                    with_ctx(|ctx| (ctx.bg, std::mem::take(&mut ctx.vertices)));
+
+                match gpu.render(bg, &vertices) {
+                    Ok(()) => {}
+                    Err(wgpu::SurfaceError::Lost) => {
+                        gpu.reconfigure();
+                        window.request_redraw();
+                    }
+                    Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Timeout) => {}
+                    Err(e) => log::error!("render error: {}", e),
+                }
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                with_ctx(|ctx| {
+                    ctx.mouse_x = position.x as f32 / gpu.scale_factor as f32;
+                    ctx.mouse_y = position.y as f32 / gpu.scale_factor as f32;
+                });
+            }
+
+            WindowEvent::MouseInput { state, .. } => {
+                with_ctx(|ctx| {
+                    ctx.mouse_pressed = state == ElementState::Pressed;
+                });
+            }
+
+            WindowEvent::KeyboardInput { event: key_event, .. } => {
+                let pressed = key_event.state == ElementState::Pressed;
+                with_ctx(|ctx| {
+                    ctx.key_pressed = pressed;
+                    if pressed {
+                        if let winit::keyboard::Key::Character(ref c) = key_event.logical_key {
+                            if let Some(ch) = c.chars().next() {
+                                ctx.key_code = ch;
+                            }
+                        }
+                    }
+                });
+            }
+
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+}
+
 /// Open the window and start the draw loop.
 ///
 /// `draw_fn` is called once per frame. Configure the window with [`size`],
@@ -892,79 +987,16 @@ pub fn run(draw_fn: fn()) {
         SetProcessDpiAwarenessContext(-2);
     }
 
-    let (width, height, win_title, msaa) = with_ctx(|ctx| {
-        (ctx.width, ctx.height, ctx.title.clone(), ctx.msaa_samples)
-    });
+    let (width, height, win_title, msaa) =
+        with_ctx(|ctx| (ctx.width, ctx.height, ctx.title.clone(), ctx.msaa_samples));
 
-    let event_loop = EventLoop::new().expect("failed to create event loop");
-    let window = Arc::new(
-        WindowBuilder::new()
-            .with_title(&win_title)
-            .with_inner_size(LogicalSize::new(width as f64, height as f64))
-            .build(&event_loop)
-            .expect("failed to create window"),
-    );
+    let window_attrs = Window::default_attributes()
+        .with_title(win_title)
+        .with_inner_size(LogicalSize::new(width as f64, height as f64));
 
-    let phys = window.inner_size();
-    let mut gpu = pollster::block_on(init_gpu(
-        Arc::clone(&window), phys.width, phys.height, width, height, msaa,
-    ));
+    let event_loop = EventLoop::new().expect("create event loop");
+    event_loop.set_control_flow(ControlFlow::Poll);
 
-    window.request_redraw();
-    event_loop.set_control_flow(ControlFlow::Wait);
-    event_loop
-        .run(move |event, target| {
-            if let Event::WindowEvent { window_id: _, event } = event {
-                match event {
-                    WindowEvent::CloseRequested => target.exit(),
-                    WindowEvent::Resized(sz) => {
-                        gpu.resize(sz.width, sz.height);
-                        window.request_redraw();
-                    }
-                    WindowEvent::RedrawRequested => {
-                        with_ctx(|ctx| ctx.reset_frame());
-                        draw_fn();
-                        let (bg, vertices) = with_ctx(|ctx| {
-                            (ctx.bg, std::mem::take(&mut ctx.vertices))
-                        });
-
-                        match gpu.render(bg, &vertices) {
-                            Ok(()) => window.request_redraw(),
-                            Err(wgpu::SurfaceError::Lost) => {
-                                gpu.reconfigure();
-                                window.request_redraw();
-                            }
-                            Err(wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Timeout) => {}
-                            Err(e) => log::error!("render error: {}", e),
-                        }
-                    }
-                    WindowEvent::CursorMoved { position, .. } => {
-                        with_ctx(|ctx| {
-                            ctx.mouse_x = position.x as f32 / gpu.scale_factor as f32;
-                            ctx.mouse_y = position.y as f32 / gpu.scale_factor as f32;
-                        });
-                    }
-                    WindowEvent::MouseInput { state, .. } => {
-                        with_ctx(|ctx| {
-                            ctx.mouse_pressed = state == ElementState::Pressed;
-                        });
-                    }
-                    WindowEvent::KeyboardInput { event: key_event, .. } => {
-                        let pressed = key_event.state == ElementState::Pressed;
-                        with_ctx(|ctx| {
-                            ctx.key_pressed = pressed;
-                            if pressed {
-                                if let winit::keyboard::Key::Character(ref c) = key_event.logical_key {
-                                    if let Some(ch) = c.chars().next() {
-                                        ctx.key_code = ch;
-                                    }
-                                }
-                            }
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        })
-        .expect("event loop error");
+    let mut app = Runner2D { draw_fn, window_attrs, msaa, window: None, gpu: None };
+    event_loop.run_app(&mut app).expect("event loop error");
 }
