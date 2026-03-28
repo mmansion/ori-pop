@@ -106,13 +106,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let t = clamp(n, 0.0, 1.0);
 
-    // Warm-to-cool geological palette
+    // Iron-mineral palette — deep cool blues through warm ochre-orange.
+    // a + b stays below 0.6 per channel so the texture never blows out white.
     let color = palette(
         t,
-        vec3<f32>(0.50, 0.45, 0.40),
-        vec3<f32>(0.50, 0.45, 0.40),
-        vec3<f32>(1.00, 0.90, 0.80),
-        vec3<f32>(0.00, 0.15, 0.30),
+        vec3<f32>(0.28, 0.32, 0.38),   // midpoint: cool grey-blue
+        vec3<f32>(0.26, 0.20, 0.16),   // amplitude: moderate
+        vec3<f32>(0.90, 0.70, 0.50),   // frequency per channel
+        vec3<f32>(0.10, 0.25, 0.50),   // phase offset per channel
     );
 
     textureStore(output_tex, vec2<i32>(gid.xy), vec4<f32>(color, 1.0));

@@ -72,12 +72,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Lambertian diffuse + ambient
     let diff    = max(dot(normal, light), 0.0);
-    let ambient = 0.15;
-    let lit     = (ambient + diff * 0.85) * tex_color.rgb;
+    let ambient = 0.12;
+    let lit     = (ambient + diff * 0.88) * tex_color.rgb;
 
-    // Subtle rim highlight towards the camera
+    // Very subtle rim — just enough to read depth at silhouette edges.
     let view_dir = normalize(u.camera_pos.xyz - in.world_pos);
-    let rim      = pow(1.0 - max(dot(normal, view_dir), 0.0), 3.0) * 0.2;
+    let rim      = pow(1.0 - max(dot(normal, view_dir), 0.0), 4.0) * 0.06;
 
     return vec4<f32>(lit + rim, tex_color.a);
 }

@@ -108,8 +108,25 @@ impl CpuMesh {
             }
         }
 
-        // Generate quads as two CCW triangles (right-hand rule, outward normal).
-        // "top" = smaller v, "bottom" = larger v in UV space.
+        // Determine winding order from the first interior quad.
+        //
+        // Different parametric surfaces have different ∂u × ∂v orientations:
+        //   Plane:  ∂u × ∂v = +Z (outward) → [tl, tr, br] is correct.
+        //   Sphere: ∂u × ∂v = inward        → [tl, bl, br] is correct.
+        //
+        // Sample one face away from any pole and compare the face normal to
+        // the stored vertex normal to pick the outward-facing winding.
+        let sc = u_steps / 4;
+        let sr = v_steps / 4;
+        let pa = Vec3::from(positions[(sr       * cols + sc    ) as usize]);
+        let pb = Vec3::from(positions[(sr       * cols + sc + 1) as usize]); // tr
+        let pc = Vec3::from(positions[((sr + 1) * cols + sc    ) as usize]); // bl
+        let face_du_dv = (pb - pa).cross(pc - pa); // direction of ∂u × ∂v
+        let vertex_n   = Vec3::from(normals[(sr * cols + sc) as usize]);
+        // If ∂u × ∂v aligns with the outward normal, use [tl, tr, br];
+        // otherwise the surface has the opposite orientation and we use [tl, bl, br].
+        let natural = face_du_dv.dot(vertex_n) > 0.0;
+
         for row in 0..v_steps {
             for col in 0..u_steps {
                 let tl = row       * cols + col;
@@ -117,9 +134,13 @@ impl CpuMesh {
                 let bl = (row + 1) * cols + col;
                 let br = (row + 1) * cols + col + 1;
 
-                // CCW winding when viewed from the outward normal direction.
-                indices.extend_from_slice(&[tl, tr, br]);
-                indices.extend_from_slice(&[tl, br, bl]);
+                if natural {
+                    indices.extend_from_slice(&[tl, tr, br]);
+                    indices.extend_from_slice(&[tl, br, bl]);
+                } else {
+                    indices.extend_from_slice(&[tl, bl, br]);
+                    indices.extend_from_slice(&[tl, br, tr]);
+                }
             }
         }
 
