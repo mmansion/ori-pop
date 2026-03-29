@@ -1,186 +1,166 @@
-//! Generative L-system rendered as a 3D wireframe, spinning in space.
+//! Growing 3D lattice — axis-aligned grid that expands outward from the centre
+//! of a wireframe cube, shell by shell, filling it with nodes and edges.
 //!
-//! An L-system (axiom: `F`, rule: `F → F[+F][-F][^F][&F]`, 3 iterations)
-//! produces a 3D branching tree via turtle graphics.  Branches are projected
-//! to screen space and drawn as 2D lines — a true wireframe with no filled
-//! polygons or textures.  The structure grows progressively from its root.
-//!
-//! Coordinate system: Z-up right-handed (Z = growth axis).
+//! Nodes sit at integer multiples of `STEP` on all three axes.  Each node
+//! connects to its 6 axis-aligned neighbours (+X, −X, +Y, −Y, +Z, −Z).
+//! The growth front is an octahedral shell keyed by Manhattan distance from
+//! the origin; concentric shells are revealed progressively.
 //!
 //! Run with:
 //!   cargo run --bin lsystem-3d
 
 use oripop_3d::prelude::*;
-use std::sync::OnceLock;
+
+// ── Lattice parameters ────────────────────────────────────────────────────────
+
+/// Grid spacing.  HALF × STEP fits just inside the ±0.5 cube.
+const STEP: f32 = 0.15;
+/// Half-extent in grid cells.  3 × 0.15 = 0.45, inside the ±0.5 cube.
+const HALF: i32 = 3;
+/// Manhattan shells revealed per second.
+const GROW_RATE: f32 = 1.5;
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 fn main() {
     size(960, 640);
-    title("L-System 3D — generative wireframe");
+    title("3D Lattice — axis-aligned grid growing into a cube");
     smooth(4);
     run3d(draw);
 }
 
-// ── L-system ─────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Cached segments — built once on first frame, reused every frame after.
-static SEGMENTS: OnceLock<Vec<[Vec3; 2]>> = OnceLock::new();
+fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t.clamp(0.0, 1.0) }
 
-fn build_lsystem() -> Vec<[Vec3; 2]> {
-    // String rewriting: F → F[+F][-F][^F][&F]
-    // 3 iterations → 5³ = 125 draw segments.
-    let mut string = String::from("F");
-    for _ in 0..3 {
-        string = string
-            .chars()
-            .flat_map(|ch| match ch {
-                'F' => "F[+F][-F][^F][&F]".chars().collect::<Vec<_>>(),
-                c   => vec![c],
-            })
-            .collect();
-    }
-
-    // 3D turtle state: position + orthonormal local frame (heading, left, up).
-    #[derive(Clone)]
-    struct State { pos: Vec3, h: Vec3, l: Vec3, u: Vec3 }
-
-    let angle = 25.7_f32.to_radians();
-    let step  = 0.13_f32; // tuned so the tree fits inside a unit cube
-
-    let mut stack: Vec<State> = Vec::new();
-    let mut st = State {
-        pos: Vec3::new(0.0, 0.0, -0.45), // start near the bottom of the cube
-        h:   Vec3::Z,                     // grow upward
-        l:   Vec3::X,                     // local left
-        u:   Vec3::Y,                     // local up
-    };
-    let mut segs: Vec<[Vec3; 2]> = Vec::new();
-
-    for ch in string.chars() {
-        match ch {
-            'F' => {
-                let next = st.pos + st.h * step;
-                segs.push([st.pos, next]);
-                st.pos = next;
-            }
-            // Yaw left / right (rotate around local up)
-            '+' => { let q = Quat::from_axis_angle(st.u,  angle); st.h = q*st.h; st.l = q*st.l; }
-            '-' => { let q = Quat::from_axis_angle(st.u, -angle); st.h = q*st.h; st.l = q*st.l; }
-            // Pitch up / down (rotate around local left)
-            '^' => { let q = Quat::from_axis_angle(st.l,  angle); st.h = q*st.h; st.u = q*st.u; }
-            '&' => { let q = Quat::from_axis_angle(st.l, -angle); st.h = q*st.h; st.u = q*st.u; }
-            // Roll left / right (rotate around heading)
-            '\\' => { let q = Quat::from_axis_angle(st.h,  angle); st.l = q*st.l; st.u = q*st.u; }
-            '/'  => { let q = Quat::from_axis_angle(st.h, -angle); st.l = q*st.l; st.u = q*st.u; }
-            '[' => stack.push(st.clone()),
-            ']' => { if let Some(s) = stack.pop() { st = s; } }
-            _   => {}
-        }
-    }
-
-    segs
-}
-
-// ── 3D → 2D projection ───────────────────────────────────────────────────────
-
-/// Project a world-space point through the combined MVP matrix to pixel coords.
-/// Returns `None` if the point is behind the camera or outside the view frustum.
 fn project(p: Vec3, mvp: Mat4, w: f32, h: f32) -> Option<(f32, f32)> {
     let clip = mvp * p.extend(1.0);
-    if clip.w < 0.001 { return None; } // behind near plane
+    if clip.w < 0.001 { return None; }
     let nx = clip.x / clip.w;
     let ny = clip.y / clip.w;
-    // Broad frustum cull — skip if clearly off-screen
-    if nx.abs() > 2.0 || ny.abs() > 2.0 { return None; }
-    Some((
-        (nx + 1.0) * 0.5 * w,
-        (1.0 - ny) * 0.5 * h,
-    ))
+    if nx.abs() > 2.5 || ny.abs() > 2.5 { return None; }
+    Some(((nx + 1.0) * 0.5 * w, (1.0 - ny) * 0.5 * h))
 }
 
-/// Draw a projected line segment; skips if either endpoint is behind camera.
-fn seg(a: Vec3, b: Vec3, mvp: Mat4, w: f32, h: f32) {
-    if let (Some(p0), Some(p1)) = (project(a, mvp, w, h), project(b, mvp, w, h)) {
-        line(p0.0, p0.1, p1.0, p1.1);
-    }
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
-
-// ── Draw loop ─────────────────────────────────────────────────────────────────
+// ── Draw ──────────────────────────────────────────────────────────────────────
 
 fn draw(scene: &mut Scene3D) {
     let t = scene.time;
     let w = scene.width;
     let h = scene.height;
 
-    background(5, 3, 12);
+    background(2, 1, 6);
 
-    // ── Camera — slow orbit, high angle ─────────────────────────────────────
-    let cam_r = 3.0_f32;
-    scene.camera.eye    = Vec3::new(cam_r * (t * 0.18).sin(), cam_r * (t * 0.18).cos(), 1.8);
-    scene.camera.target = Vec3::new(0.0, 0.0, 0.05);
+    // Enable right-click orbit + scroll zoom.
+    // The runner manages scene.camera.eye — don't set it here.
+    scene.orbit_enabled = true;
     scene.camera.fov_y  = std::f32::consts::FRAC_PI_4;
-
-    // No 3D meshes — the entire visual is drawn via the 2D overlay.
     scene.clear();
 
-    // Combined MVP: camera view-projection × spinning model matrix
-    let spin = Mat4::from_rotation_z(t * 0.32);
-    let mvp  = scene.camera.view_proj(scene.aspect()) * spin;
+    // Scene is static — right-click drag to orbit, scroll to zoom.
+    let mvp = scene.camera.view_proj(scene.aspect());
 
-    // ── L-system branches ────────────────────────────────────────────────────
-    let segments = SEGMENTS.get_or_init(build_lsystem);
-    let total    = segments.len();
+    let max_shell     = (HALF * 3) as f32;
+    let current_shell = (t * GROW_RATE).min(max_shell + 1.0);
 
-    // Progressive growth: ~28 new segments per second
-    let visible = ((t * 28.0) as usize).min(total);
-
+    // ── Edges ─────────────────────────────────────────────────────────────────
+    // For each node, emit the three edges toward its +X, +Y, +Z neighbours.
+    // This covers every edge in the lattice exactly once.
     no_fill();
-    for (i, seg_pts) in segments[..visible].iter().enumerate() {
-        let frac = i as f32 / total as f32;
 
-        // Warm amber at root → cool blue-white at tips
-        let r = lerp(240.0, 80.0,  frac) as u8;
-        let g = lerp(180.0, 160.0, frac) as u8;
-        let b = lerp(80.0,  255.0, frac) as u8;
-        let a = lerp(230.0, 140.0, frac) as u8;
+    for iz in -HALF..=HALF {
+        for iy in -HALF..=HALF {
+            for ix in -HALF..=HALF {
+                let a    = Vec3::new(ix as f32 * STEP, iy as f32 * STEP, iz as f32 * STEP);
+                let da   = (ix.abs() + iy.abs() + iz.abs()) as f32;
 
-        // Thick trunk → hairline tips
-        stroke_weight(lerp(2.0, 0.6, frac));
-        stroke_a(r, g, b, a);
+                for (dx, dy, dz) in [(1i32,0i32,0i32), (0,1,0), (0,0,1)] {
+                    let (bx, by, bz) = (ix + dx, iy + dy, iz + dz);
+                    if bx > HALF || by > HALF || bz > HALF { continue; }
 
-        seg(seg_pts[0], seg_pts[1], mvp, w, h);
+                    let b  = Vec3::new(bx as f32 * STEP, by as f32 * STEP, bz as f32 * STEP);
+                    let db = (bx.abs() + by.abs() + bz.abs()) as f32;
+
+                    // Shell = the furthest endpoint.
+                    // Smooth fade-in as the growth front crosses this edge.
+                    let shell  = da.max(db);
+                    let fade   = (current_shell - shell + 0.8).clamp(0.0, 1.0);
+                    if fade <= 0.0 { continue; }
+
+                    // Brightness falls off from centre → edge.
+                    let centre = 1.0 - shell / max_shell;
+                    let bright = lerp(30.0, 255.0, centre * fade);
+                    let alpha  = lerp(20.0, 200.0, centre * fade);
+
+                    // Slightly thicker lines near centre.
+                    stroke_weight(lerp(0.4, 1.6, centre));
+
+                    // Cool blue-white palette: near white at centre, blue at edge.
+                    stroke_a(
+                        (bright * 0.75) as u8,
+                        (bright * 0.88) as u8,
+                        bright          as u8,
+                        alpha           as u8,
+                    );
+
+                    if let (Some(p0), Some(p1)) = (project(a, mvp, w, h), project(b, mvp, w, h)) {
+                        line(p0.0, p0.1, p1.0, p1.1);
+                    }
+                }
+            }
+        }
     }
 
-    // ── Bounding cube wireframe ───────────────────────────────────────────────
+    // ── Nodes ─────────────────────────────────────────────────────────────────
+    // Draw a small dot at each visible lattice node.
+    no_stroke();
+
+    for iz in -HALF..=HALF {
+        for iy in -HALF..=HALF {
+            for ix in -HALF..=HALF {
+                let p    = Vec3::new(ix as f32 * STEP, iy as f32 * STEP, iz as f32 * STEP);
+                let dist = (ix.abs() + iy.abs() + iz.abs()) as f32;
+
+                let fade   = (current_shell - dist + 0.8).clamp(0.0, 1.0);
+                if fade <= 0.0 { continue; }
+
+                let centre = 1.0 - dist / max_shell;
+                let bright = lerp(60.0, 255.0, centre * fade) as u8;
+                let alpha  = lerp(40.0, 230.0, centre * fade) as u8;
+                let radius = lerp(0.8, 3.0, centre);
+
+                fill_a(bright, bright, (bright as f32 * 1.05).min(255.0) as u8, alpha);
+
+                if let Some((sx, sy)) = project(p, mvp, w, h) {
+                    ellipse(sx - radius, sy - radius, radius * 2.0, radius * 2.0);
+                }
+            }
+        }
+    }
+
+    // ── Bounding cube ─────────────────────────────────────────────────────────
     let s = 0.5_f32;
-    let corners: &[(Vec3, Vec3)] = &[
-        // Bottom face
+    no_fill();
+    stroke_weight(0.5);
+    stroke_a(45, 40, 80, 70);
+
+    let cube_edges: &[(Vec3, Vec3)] = &[
         (Vec3::new(-s,-s,-s), Vec3::new( s,-s,-s)),
         (Vec3::new( s,-s,-s), Vec3::new( s, s,-s)),
         (Vec3::new( s, s,-s), Vec3::new(-s, s,-s)),
         (Vec3::new(-s, s,-s), Vec3::new(-s,-s,-s)),
-        // Top face
         (Vec3::new(-s,-s, s), Vec3::new( s,-s, s)),
         (Vec3::new( s,-s, s), Vec3::new( s, s, s)),
         (Vec3::new( s, s, s), Vec3::new(-s, s, s)),
         (Vec3::new(-s, s, s), Vec3::new(-s,-s, s)),
-        // Vertical pillars
         (Vec3::new(-s,-s,-s), Vec3::new(-s,-s, s)),
         (Vec3::new( s,-s,-s), Vec3::new( s,-s, s)),
         (Vec3::new( s, s,-s), Vec3::new( s, s, s)),
         (Vec3::new(-s, s,-s), Vec3::new(-s, s, s)),
     ];
-
-    stroke_weight(0.8);
-    stroke_a(70, 60, 120, 110);
-    for (a, b) in corners {
-        seg(*a, *b, mvp, w, h);
+    for (a, b) in cube_edges {
+        if let (Some(p0), Some(p1)) = (project(*a, mvp, w, h), project(*b, mvp, w, h)) {
+            line(p0.0, p0.1, p1.0, p1.1);
+        }
     }
-
-    // ── Growth progress bar ───────────────────────────────────────────────────
-    let bar_w = (w - 48.0) * (visible as f32 / total as f32);
-    stroke_weight(1.0);
-    stroke_a(80, 60, 140, 80);
-    line(24.0, h - 20.0, 24.0 + bar_w, h - 20.0);
 }

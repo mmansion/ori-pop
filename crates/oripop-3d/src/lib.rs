@@ -81,12 +81,35 @@ struct Runner3D {
 
     egui_ctx:         egui::Context,
     egui_winit:       Option<egui_winit::State>,
+
+    // ── Orbit camera ──────────────────────────────────────────────────────────
+    /// Accumulated azimuth angle (longitude in XY, radians).
+    orbit_az:     f32,
+    /// Accumulated elevation angle (latitude from XY plane, radians).
+    orbit_el:     f32,
+    /// Distance from orbit target.
+    orbit_r:      f32,
+    /// World-space point the camera orbits around.
+    orbit_target: glam::Vec3,
+    /// Whether orbit state has been engaged (right-drag or scroll used).
+    orbit_on:     bool,
+    /// Right mouse button is currently held.
+    orbit_rdown:  bool,
+    /// Last known mouse position (logical pixels) for delta computation.
+    cur_x:        f32,
+    cur_y:        f32,
 }
 
 impl Runner3D {
     fn new(draw_fn: fn(&mut Scene3D), window_attrs: winit::window::WindowAttributes, msaa: u32) -> Self {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
+
+        // Default orbit angles matching Camera::default() eye=(4,-4,3), target=0
+        let default_eye = glam::Vec3::new(4.0, -4.0, 3.0);
+        let orbit_r  = default_eye.length();
+        let orbit_el = (default_eye.z / orbit_r).asin();
+        let orbit_az = default_eye.y.atan2(default_eye.x);
 
         Self {
             draw_fn,
@@ -99,6 +122,14 @@ impl Runner3D {
             start:         std::time::Instant::now(),
             egui_ctx,
             egui_winit:    None,
+            orbit_az,
+            orbit_el,
+            orbit_r,
+            orbit_target: glam::Vec3::ZERO,
+            orbit_on:     false,
+            orbit_rdown:  false,
+            cur_x:        0.0,
+            cur_y:        0.0,
         }
     }
 }
@@ -185,6 +216,22 @@ impl ApplicationHandler for Runner3D {
                 // ── Run draw callback ──────────────────────────────────────
                 oripop_core::draw::begin_frame();
                 (self.draw_fn)(&mut self.scene);
+
+                // ── Apply orbit camera override ────────────────────────────
+                // Applied AFTER draw_fn so the orbit takes precedence over
+                // any camera position the sketch may have set.
+                if self.scene.orbit_enabled && self.orbit_on {
+                    let el = self.orbit_el;
+                    let az = self.orbit_az;
+                    let r  = self.orbit_r;
+                    self.scene.camera.eye    = self.orbit_target + r * glam::Vec3::new(
+                        el.cos() * az.cos(),
+                        el.cos() * az.sin(),
+                        el.sin(),
+                    );
+                    self.scene.camera.target = self.orbit_target;
+                }
+
                 let (bg, vertices_2d) = oripop_core::draw::take_2d_vertices();
 
                 // ── Build egui frame ───────────────────────────────────────
@@ -244,15 +291,68 @@ impl ApplicationHandler for Runner3D {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                let sf = renderer.scale_factor as f32;
-                oripop_core::draw::set_mouse_pos(
-                    position.x as f32 / sf,
-                    position.y as f32 / sf,
-                );
+                let sf  = renderer.scale_factor as f32;
+                let x   = position.x as f32 / sf;
+                let y   = position.y as f32 / sf;
+                oripop_core::draw::set_mouse_pos(x, y);
+
+                // Update orbit angles while right button is held.
+                if self.orbit_rdown {
+                    let dx = x - self.cur_x;
+                    let dy = y - self.cur_y;
+                    self.orbit_az += dx * 0.005;
+                    self.orbit_el  = (self.orbit_el - dy * 0.005)
+                        .clamp(-std::f32::consts::FRAC_PI_2 * 0.94,
+                                std::f32::consts::FRAC_PI_2 * 0.94);
+                    self.orbit_on  = true;
+                }
+                self.cur_x = x;
+                self.cur_y = y;
             }
 
-            WindowEvent::MouseInput { state, .. } => {
-                oripop_core::draw::set_mouse_pressed(state == ElementState::Pressed);
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pressed = state == ElementState::Pressed;
+                match button {
+                    winit::event::MouseButton::Left => {
+                        oripop_core::draw::set_mouse_pressed(pressed);
+                    }
+                    winit::event::MouseButton::Right => {
+                        self.orbit_rdown = pressed;
+                        if pressed {
+                            // Capture current camera spherical coordinates.
+                            let eye    = self.scene.camera.eye;
+                            let target = self.scene.camera.target;
+                            let dir    = eye - target;
+                            let r      = dir.length().max(0.1);
+                            self.orbit_r      = r;
+                            self.orbit_target = target;
+                            self.orbit_el     = (dir.z / r).asin();
+                            self.orbit_az     = dir.y.atan2(dir.x);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                use winit::event::MouseScrollDelta;
+                let scroll = match delta {
+                    MouseScrollDelta::LineDelta(_, y)  => y,
+                    MouseScrollDelta::PixelDelta(pos)  => pos.y as f32 * 0.01,
+                };
+                // If orbit not yet engaged, capture camera state first.
+                if !self.orbit_on {
+                    let eye    = self.scene.camera.eye;
+                    let target = self.scene.camera.target;
+                    let dir    = eye - target;
+                    let r      = dir.length().max(0.1);
+                    self.orbit_r      = r;
+                    self.orbit_target = target;
+                    self.orbit_el     = (dir.z / r).asin();
+                    self.orbit_az     = dir.y.atan2(dir.x);
+                }
+                self.orbit_r  = (self.orbit_r * (1.0 - scroll * 0.12)).clamp(0.3, 80.0);
+                self.orbit_on = true;
             }
 
             WindowEvent::KeyboardInput { event: key_event, .. } => {

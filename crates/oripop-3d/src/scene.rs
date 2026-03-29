@@ -98,8 +98,13 @@ pub struct Scene3D {
     /// Logical pixel height of the window (updated on resize).
     pub height: f32,
 
-    /// Show the egui inspector panel. Toggle with the `Tab` key.
+    /// Show the egui inspector panel. Toggle with the **Tab** key. Default: `false`.
     pub show_inspector: bool,
+
+    /// When `true`, right-click drag orbits the camera and the scroll wheel
+    /// zooms.  Set this in your draw callback and do **not** overwrite
+    /// `scene.camera.eye` — the runner manages it.
+    pub orbit_enabled: bool,
 
     pub(crate) objects: Vec<Object3D>,
     next_id:            u32,
@@ -114,7 +119,8 @@ impl Scene3D {
             time:           0.0,
             width,
             height,
-            show_inspector: true,
+            show_inspector: false,
+            orbit_enabled:  false,
             objects:        Vec::new(),
             next_id:        0,
         }
