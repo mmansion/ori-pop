@@ -1,16 +1,17 @@
-//! Organic 3D lattice — axis-aligned grid that grows from the centre of a
-//! cube using a randomised BFS.  Because each step has a random duration,
-//! some tendrils race ahead while others lag, giving the growth an organic,
-//! generative character while remaining strictly axis-aligned (X/Y/Z only).
+//! Boid-driven toolpath sketch.
 //!
-//! Edges are coloured by their axis:  X = blue  |  Y = teal  |  Z = green
-//! Brightness falls off from the centre outward.
-//! The growth loops automatically with a smooth fade-out.
+//! Each agent has a position, velocity, and a growing trail.  Forces applied
+//! every frame:
+//!   • Separation from other agents (repulsion within SEP_RADIUS)
+//!   • Own-trail avoidance (repels from its own recent path → prevents loops)
+//!   • Soft boundary repulsion (stays inside the ±BOUND cube)
+//!   • Random perturbation (organic variation)
+//!
+//! The trail is drawn as a continuous extruding line — the tip grows each
+//! frame exactly like a toolpath or pen being dragged across the surface.
 //!
 //! Controls:
-//!   Right-drag — orbit camera
-//!   Scroll     — zoom
-//!   Space      — toggle inspector panel
+//!   Right-drag — orbit   |   Scroll — zoom   |   Space — inspector
 //!
 //! Run with:
 //!   cargo run --bin lsystem-3d
@@ -18,128 +19,218 @@
 use oripop_3d::prelude::*;
 use rand::{SeedableRng, Rng};
 use rand::rngs::SmallRng;
-use std::collections::{HashMap, VecDeque};
-use std::sync::OnceLock;
+use std::collections::VecDeque;
+use std::cell::RefCell;
 
-// ── Parameters ────────────────────────────────────────────────────────────────
+// ── Simulation parameters ─────────────────────────────────────────────────────
 
-const STEP:      f32 = 0.14; // grid spacing (3 × 0.14 = 0.42, fits inside ±0.5)
-const HALF:      i32 = 3;    // half-extent in cells
-const GROW_RATE: f32 = 2.2;  // algorithm-time units revealed per real second
-const FADE_IN:   f32 = 1.2;  // edge/node fade-in window (algorithm time)
-const HOLD_SECS: f32 = 3.5;  // pause after full growth before looping
+const NUM_AGENTS: usize = 10;
+/// Maximum trail length per agent (older points are removed from the front).
+const MAX_TRAIL:  usize = 2500;
+const MAX_SPEED:  f32   = 0.30;
+const MIN_SPEED:  f32   = 0.06;
+/// Distance within which agents repel each other.
+const SEP_RADIUS: f32   = 0.24;
+const SEP_FORCE:  f32   = 0.10;
+/// Soft wall distance from cube centre.
+const BOUND:      f32   = 0.42;
+const WALL_FORCE: f32   = 0.55;
+/// Damping applied to velocity each frame (< 1 → gradually slows if no force).
+const DAMPING:    f32   = 0.992;
+/// Amplitude of the random perturbation added each frame.
+const NOISE_AMP:  f32   = 0.022;
 
-fn main() {
-    size(960, 640);
-    title("3D Lattice — organic growth");
-    smooth(4);
-    run3d(draw);
+// ── Agent colours ─────────────────────────────────────────────────────────────
+
+#[rustfmt::skip]
+const COLORS: &[(u8, u8, u8)] = &[
+    (100, 160, 255), // blue
+    ( 80, 225, 175), // teal
+    (110, 235, 110), // green
+    (255, 215,  80), // yellow
+    (255, 130,  55), // orange
+    (255,  75, 120), // pink
+    (175,  75, 255), // violet
+    ( 75, 205, 255), // sky
+    (255, 155,  80), // amber
+    (130, 255, 180), // mint
+];
+
+// ── Agent ─────────────────────────────────────────────────────────────────────
+
+struct Agent {
+    pos:   Vec3,
+    vel:   Vec3,
+    trail: VecDeque<Vec3>,
+    color: (u8, u8, u8),
 }
 
-// ── Lattice data ──────────────────────────────────────────────────────────────
-
-struct LatticeEdge {
-    a:    Vec3,
-    b:    Vec3,
-    /// Algorithm-time at which this edge is fully revealed.
-    t:    f32,
-    /// Axis direction — 0 = +X, 1 = +Y, 2 = +Z.
-    axis: u8,
-    /// Manhattan distance of the nearer endpoint from origin.
-    dist: f32,
+impl Agent {
+    fn new(pos: Vec3, vel: Vec3, color: (u8, u8, u8)) -> Self {
+        Self { pos, vel, trail: VecDeque::new(), color }
+    }
 }
 
-struct LatticeNode {
-    pos:  Vec3,
-    /// Algorithm-time at which this node is first discovered.
-    t:    f32,
-    dist: f32,
+// ── Simulation ────────────────────────────────────────────────────────────────
+
+struct Sim {
+    agents:    Vec<Agent>,
+    rng:       SmallRng,
+    last_time: f32,
 }
 
-static LATTICE: OnceLock<(Vec<LatticeEdge>, Vec<LatticeNode>, f32)> = OnceLock::new();
+impl Sim {
+    fn new() -> Self {
+        let rng = SmallRng::seed_from_u64(99991);
 
-fn build_lattice() -> (Vec<LatticeEdge>, Vec<LatticeNode>, f32) {
-    let mut node_t: HashMap<(i32,i32,i32), f32> = HashMap::new();
-    let mut queue:  VecDeque<(i32,i32,i32)>     = VecDeque::new();
-    let mut rng = SmallRng::seed_from_u64(31337);
+        // Spread initial directions evenly using the golden angle on a sphere.
+        let golden = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+        let agents = (0..NUM_AGENTS).map(|i| {
+            let theta = i as f32 * golden;
+            let phi   = std::f32::consts::FRAC_PI_2
+                        * (1.0 - 2.0 * i as f32 / NUM_AGENTS as f32);
+            let dir   = Vec3::new(phi.cos() * theta.cos(),
+                                  phi.cos() * theta.sin(),
+                                  phi.sin());
+            let vel   = dir * 0.20;
+            let pos   = dir * 0.04; // small offset from centre
+            Agent::new(pos, vel, COLORS[i % COLORS.len()])
+        }).collect();
 
-    // Randomised BFS from the centre.
-    // Each step has a random duration in [1, 4], so some paths advance
-    // three times faster than others — giving organic, uneven growth.
-    node_t.insert((0, 0, 0), 0.0);
-    queue.push_back((0, 0, 0));
-
-    while let Some((x, y, z)) = queue.pop_front() {
-        let t = node_t[&(x, y, z)];
-
-        // Shuffle the six axis-aligned directions so the BFS explores
-        // in a different random order at every node.
-        let mut dirs = [(-1i32,0i32,0i32),(1,0,0),(0,-1,0),(0,1,0),(0,0,-1),(0,0,1)];
-        for i in (1..6usize).rev() {
-            let j = rng.random_range(0..=i);
-            dirs.swap(i, j);
-        }
-
-        for (dx, dy, dz) in dirs {
-            let (nx, ny, nz) = (x + dx, y + dy, z + dz);
-            if nx.abs() > HALF || ny.abs() > HALF || nz.abs() > HALF { continue; }
-            if node_t.contains_key(&(nx, ny, nz)) { continue; }
-
-            let step: f32 = 1.0 + rng.random::<f32>() * 3.0;
-            node_t.insert((nx, ny, nz), t + step);
-            queue.push_back((nx, ny, nz));
-        }
+        Self { agents, rng, last_time: 0.0 }
     }
 
-    // ── Nodes ─────────────────────────────────────────────────────────────────
-    let mut nodes: Vec<LatticeNode> = Vec::new();
-    for z in -HALF..=HALF {
-        for y in -HALF..=HALF {
-            for x in -HALF..=HALF {
-                if let Some(&t) = node_t.get(&(x, y, z)) {
-                    nodes.push(LatticeNode {
-                        pos:  Vec3::new(x as f32 * STEP, y as f32 * STEP, z as f32 * STEP),
-                        t,
-                        dist: (x.abs() + y.abs() + z.abs()) as f32,
-                    });
+    fn step(&mut self, now: f32) {
+        let dt = (now - self.last_time).clamp(0.0, 0.05);
+        self.last_time = now;
+        if dt <= 0.0 { return; }
+
+        // Snapshot positions so all agents see the state from the same instant.
+        let positions: Vec<Vec3> = self.agents.iter().map(|a| a.pos).collect();
+
+        for (i, agent) in self.agents.iter_mut().enumerate() {
+            let mut acc = Vec3::ZERO;
+
+            // ── Separation from other agents ──────────────────────────────
+            for (j, &other) in positions.iter().enumerate() {
+                if j == i { continue; }
+                let diff = agent.pos - other;
+                let dist = diff.length();
+                if dist < SEP_RADIUS && dist > 0.001 {
+                    let strength = SEP_FORCE * (1.0 - dist / SEP_RADIUS);
+                    acc += diff.normalize() * strength;
                 }
+            }
+
+            // ── Own-trail avoidance (recent 60 points, skip 5 newest) ─────
+            // This makes agents curve away from their own wake — preventing
+            // tight re-tracing loops and encouraging space-filling behaviour.
+            let trail_len = agent.trail.len();
+            let check = 60.min(trail_len);
+            if check > 5 {
+                for &past in agent.trail.iter().rev().take(check).skip(5) {
+                    let diff = agent.pos - past;
+                    let dist = diff.length();
+                    if dist < 0.11 && dist > 0.001 {
+                        acc += diff.normalize() * 0.045 / dist.max(0.02);
+                    }
+                }
+            }
+
+            // ── Soft boundary repulsion ───────────────────────────────────
+            for dim in 0..3usize {
+                let p = agent.pos[dim];
+                if p > BOUND {
+                    acc[dim] -= WALL_FORCE * (p - BOUND);
+                } else if p < -BOUND {
+                    acc[dim] += WALL_FORCE * (-BOUND - p);
+                }
+            }
+
+            // ── Random perturbation ───────────────────────────────────────
+            acc += Vec3::new(
+                self.rng.random::<f32>() * 2.0 - 1.0,
+                self.rng.random::<f32>() * 2.0 - 1.0,
+                self.rng.random::<f32>() * 2.0 - 1.0,
+            ) * NOISE_AMP;
+
+            // ── Maintain minimum speed ────────────────────────────────────
+            if agent.vel.length() < MIN_SPEED {
+                let rand_dir = Vec3::new(
+                    self.rng.random::<f32>() * 2.0 - 1.0,
+                    self.rng.random::<f32>() * 2.0 - 1.0,
+                    self.rng.random::<f32>() * 2.0 - 1.0,
+                ).normalize_or(Vec3::X);
+                acc += rand_dir * 0.12;
+            }
+
+            // ── Integrate ─────────────────────────────────────────────────
+            agent.vel = (agent.vel + acc * dt) * DAMPING;
+            agent.vel  = agent.vel.clamp_length_max(MAX_SPEED);
+            agent.pos += agent.vel * dt;
+
+            // Hard clamp so agents never escape the cube.
+            agent.pos = agent.pos.clamp(Vec3::splat(-0.45), Vec3::splat(0.45));
+
+            // Grow trail: append current position.
+            agent.trail.push_back(agent.pos);
+            if agent.trail.len() > MAX_TRAIL {
+                agent.trail.pop_front(); // remove oldest
             }
         }
     }
 
-    // ── Edges (each emitted once, toward the +X / +Y / +Z neighbour) ──────────
-    let mut edges: Vec<LatticeEdge> = Vec::new();
-    for z in -HALF..=HALF {
-        for y in -HALF..=HALF {
-            for x in -HALF..=HALF {
-                let ta = *node_t.get(&(x, y, z)).unwrap_or(&f32::MAX);
-                for (dx, dy, dz, axis) in [(1i32,0i32,0i32,0u8),(0,1,0,1),(0,0,1,2)] {
-                    let (nx, ny, nz) = (x + dx, y + dy, z + dz);
-                    if nx.abs() > HALF || ny.abs() > HALF || nz.abs() > HALF { continue; }
-                    let tb = *node_t.get(&(nx, ny, nz)).unwrap_or(&f32::MAX);
-                    let dist = (x.abs().min(nx.abs())
-                              + y.abs().min(ny.abs())
-                              + z.abs().min(nz.abs())) as f32;
-                    edges.push(LatticeEdge {
-                        a:    Vec3::new(x  as f32 * STEP, y  as f32 * STEP, z  as f32 * STEP),
-                        b:    Vec3::new(nx as f32 * STEP, ny as f32 * STEP, nz as f32 * STEP),
-                        t:    ta.max(tb), // revealed when the later endpoint is discovered
-                        axis,
-                        dist,
-                    });
+    fn render(&self, mvp: Mat4, w: f32, h: f32) {
+        no_fill();
+
+        for agent in &self.agents {
+            let n = agent.trail.len();
+            if n < 2 { continue; }
+
+            let (cr, cg, cb) = agent.color;
+            let mut prev_screen: Option<(f32, f32)> = None;
+
+            for (idx, &pt) in agent.trail.iter().enumerate() {
+                let screen = project(pt, mvp, w, h);
+                if let (Some(p0), Some(p1)) = (prev_screen, screen) {
+                    // freshness: 0.0 = oldest, 1.0 = newest
+                    let freshness = idx as f32 / n as f32;
+                    let alpha_t   = freshness.powf(1.6); // non-linear fade
+
+                    let alpha  = (alpha_t * 210.0) as u8;
+                    let bright = 0.25 + 0.75 * alpha_t;
+                    let weight = 0.35 + alpha_t * 1.6;
+
+                    stroke_weight(weight);
+                    stroke_a(
+                        (cr as f32 * bright) as u8,
+                        (cg as f32 * bright) as u8,
+                        (cb as f32 * bright) as u8,
+                        alpha,
+                    );
+                    line(p0.0, p0.1, p1.0, p1.1);
                 }
+                prev_screen = screen;
             }
+
+            // Bright dot at the agent's current tip.
+            no_stroke();
+            fill_a(cr, cg, cb, 255);
+            if let Some((sx, sy)) = project(agent.pos, mvp, w, h) {
+                ellipse(sx - 2.5, sy - 2.5, 5.0, 5.0);
+            }
+            no_fill();
         }
     }
+}
 
-    edges.sort_by(|a, b| a.t.partial_cmp(&b.t).unwrap_or(std::cmp::Ordering::Equal));
-    let max_t = edges.last().map(|e| e.t).unwrap_or(1.0);
-    (edges, nodes, max_t)
+// ── Thread-local sim state ────────────────────────────────────────────────────
+
+thread_local! {
+    static SIM: RefCell<Option<Sim>> = RefCell::new(None);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t.clamp(0.0, 1.0) }
 
 fn project(p: Vec3, mvp: Mat4, w: f32, h: f32) -> Option<(f32, f32)> {
     let c = mvp * p.extend(1.0);
@@ -149,12 +240,19 @@ fn project(p: Vec3, mvp: Mat4, w: f32, h: f32) -> Option<(f32, f32)> {
     Some(((nx + 1.0) * 0.5 * w, (1.0 - ny) * 0.5 * h))
 }
 
-// ── Draw ──────────────────────────────────────────────────────────────────────
+// ── Draw loop ─────────────────────────────────────────────────────────────────
+
+fn main() {
+    size(960, 640);
+    title("Boid toolpaths — extruding trails with force & avoidance");
+    smooth(4);
+    run3d(draw);
+}
 
 fn draw(scene: &mut Scene3D) {
-    let t = scene.time;
     let w = scene.width;
     let h = scene.height;
+    let t = scene.time;
 
     background(2, 1, 6);
     scene.orbit_enabled = true;
@@ -162,80 +260,20 @@ fn draw(scene: &mut Scene3D) {
     scene.clear();
 
     let mvp = scene.camera.view_proj(scene.aspect());
-    let (edges, nodes, max_t) = LATTICE.get_or_init(build_lattice);
 
-    // Loop timing: grow → hold → fade out → restart.
-    let grow_dur = max_t / GROW_RATE;
-    let cycle    = grow_dur + HOLD_SECS;
-    let t_local  = t % cycle;
-    let reveal   = (t_local * GROW_RATE).min(max_t + FADE_IN);
-
-    // Smooth global fade-out in the last 1.5 s of each cycle.
-    let global_fade = if t_local > cycle - 1.5 {
-        ((cycle - t_local) / 1.5).clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-
-    let max_dist = (HALF * 3) as f32;
-
-    // ── Edges ─────────────────────────────────────────────────────────────────
-    no_fill();
-
-    for edge in edges.iter() {
-        // Edges are sorted by reveal time — safe to break early.
-        if edge.t > reveal + FADE_IN { break; }
-
-        // Per-edge fade: smoothly appears over FADE_IN algorithm-time units.
-        let local_fade = ((reveal - edge.t + FADE_IN) / FADE_IN).clamp(0.0, 1.0);
-        let fade = local_fade * global_fade;
-        if fade < 0.01 { continue; }
-
-        let centre = 1.0 - edge.dist / max_dist;
-        let bright  = lerp(18.0, 230.0, centre * fade);
-        let alpha   = lerp( 8.0, 195.0, centre * fade);
-
-        stroke_weight(lerp(0.3, 1.6, centre));
-
-        // Direction-coded colour.
-        let (r, g, b): (f32, f32, f32) = match edge.axis {
-            0 => (bright * 0.28, bright * 0.52, bright         ), // X → blue
-            1 => (bright * 0.22, bright,         bright * 0.70 ), // Y → teal
-            _ => (bright * 0.18, bright,         bright * 0.40 ), // Z → green
-        };
-
-        stroke_a(r as u8, g as u8, b as u8, alpha as u8);
-
-        if let (Some(p0), Some(p1)) = (project(edge.a, mvp, w, h), project(edge.b, mvp, w, h)) {
-            line(p0.0, p0.1, p1.0, p1.1);
-        }
-    }
-
-    // ── Nodes ─────────────────────────────────────────────────────────────────
-    no_stroke();
-
-    for node in nodes.iter() {
-        let local_fade = ((reveal - node.t + FADE_IN) / FADE_IN).clamp(0.0, 1.0);
-        let fade = local_fade * global_fade;
-        if fade < 0.01 { continue; }
-
-        let centre = 1.0 - node.dist / max_dist;
-        let bright  = lerp(25.0, 255.0, centre * fade) as u8;
-        let alpha   = lerp(15.0, 215.0, centre * fade) as u8;
-        let radius  = lerp(0.6, 2.6, centre);
-
-        fill_a(bright, (bright as f32 * 1.02).min(255.0) as u8, bright, alpha);
-
-        if let Some((sx, sy)) = project(node.pos, mvp, w, h) {
-            ellipse(sx - radius, sy - radius, radius * 2.0, radius * 2.0);
-        }
-    }
+    // Advance simulation and render trails.
+    SIM.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        let sim = opt.get_or_insert_with(Sim::new);
+        sim.step(t);
+        sim.render(mvp, w, h);
+    });
 
     // ── Bounding cube ─────────────────────────────────────────────────────────
     let s = 0.5_f32;
     no_fill();
     stroke_weight(0.5);
-    stroke_a(38, 32, 70, (60.0 * global_fade) as u8);
+    stroke_a(38, 32, 70, 55);
 
     let cube_edges: &[(Vec3, Vec3)] = &[
         (Vec3::new(-s,-s,-s), Vec3::new( s,-s,-s)),
