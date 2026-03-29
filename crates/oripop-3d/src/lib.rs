@@ -358,9 +358,9 @@ impl ApplicationHandler for Runner3D {
             WindowEvent::KeyboardInput { event: key_event, .. } => {
                 let pressed = key_event.state == ElementState::Pressed;
 
-                // Toggle inspector on Tab.
+                // Toggle inspector on Space.
                 if pressed {
-                    if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab) =
+                    if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) =
                         key_event.logical_key
                     {
                         self.scene.show_inspector = !self.scene.show_inspector;
@@ -398,7 +398,7 @@ impl ApplicationHandler for Runner3D {
 /// - Call any `oripop_core` 2D drawing function; those shapes will be
 ///   rendered as a depth-free overlay on top of the 3D scene.
 ///
-/// Press **Tab** to toggle the live inspector panel.
+/// Press **Space** to toggle the live inspector panel.
 ///
 /// This function blocks until the window is closed.
 pub fn run3d(draw_fn: fn(&mut Scene3D)) {
