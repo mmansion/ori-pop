@@ -98,6 +98,8 @@ struct Runner3D {
     /// Last known mouse position (logical pixels) for delta computation.
     cur_x:        f32,
     cur_y:        f32,
+    /// scene.time at the previous frame — used to compute dt for auto-spin.
+    prev_time:    f32,
 }
 
 impl Runner3D {
@@ -105,11 +107,11 @@ impl Runner3D {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
 
-        // Default orbit angles matching Camera::default() eye=(4,-4,3), target=0
-        let default_eye = glam::Vec3::new(4.0, -4.0, 3.0);
-        let orbit_r  = default_eye.length();
-        let orbit_el = (default_eye.z / orbit_r).asin();
-        let orbit_az = default_eye.y.atan2(default_eye.x);
+        // Default orbit position — closer than Camera::default() so sketches
+        // that use orbit_enabled start with a tighter, more intimate framing.
+        let orbit_r  = 3.0_f32;
+        let orbit_el = 0.42_f32;  // ~24° above the XY plane
+        let orbit_az = -0.79_f32; // ~45° into the -X/-Y quadrant
 
         Self {
             draw_fn,
@@ -130,6 +132,7 @@ impl Runner3D {
             orbit_rdown:  false,
             cur_x:        0.0,
             cur_y:        0.0,
+            prev_time:    0.0,
         }
     }
 }
@@ -212,15 +215,27 @@ impl ApplicationHandler for Runner3D {
 
             WindowEvent::RedrawRequested => {
                 self.scene.time = self.start.elapsed().as_secs_f32();
+                let dt = (self.scene.time - self.prev_time).clamp(0.0, 0.05);
+                self.prev_time = self.scene.time;
+
+                // ── Auto-spin ──────────────────────────────────────────────
+                // Rotate the orbit azimuth automatically, pausing while the
+                // right button is held so manual dragging feels uninterrupted.
+                if self.scene.auto_spin && !self.orbit_rdown {
+                    self.orbit_az -= self.scene.spin_speed * dt;
+                    self.orbit_on  = true; // ensure orbit is active
+                }
 
                 // ── Run draw callback ──────────────────────────────────────
                 oripop_core::draw::begin_frame();
                 (self.draw_fn)(&mut self.scene);
 
                 // ── Apply orbit camera override ────────────────────────────
-                // Applied AFTER draw_fn so the orbit takes precedence over
-                // any camera position the sketch may have set.
-                if self.scene.orbit_enabled && self.orbit_on {
+                // Applied AFTER draw_fn so orbit takes precedence over any
+                // camera position the sketch may have set.
+                // Always applied when orbit_enabled — no longer gated on
+                // orbit_on, so the closer default radius shows from frame 1.
+                if self.scene.orbit_enabled {
                     let el = self.orbit_el;
                     let az = self.orbit_az;
                     let r  = self.orbit_r;

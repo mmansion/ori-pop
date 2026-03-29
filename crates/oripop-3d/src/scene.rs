@@ -106,6 +106,13 @@ pub struct Scene3D {
     /// `scene.camera.eye` — the runner manages it.
     pub orbit_enabled: bool,
 
+    /// When `true`, the camera automatically spins around the scene.
+    /// Spinning pauses while the right mouse button is held (orbit drag).
+    pub auto_spin: bool,
+
+    /// Speed of the auto-spin in radians per second. Default: `0.25`.
+    pub spin_speed: f32,
+
     pub(crate) objects: Vec<Object3D>,
     next_id:            u32,
 }
@@ -121,6 +128,8 @@ impl Scene3D {
             height,
             show_inspector: false,
             orbit_enabled:  false,
+            auto_spin:      false,
+            spin_speed:     0.25,
             objects:        Vec::new(),
             next_id:        0,
         }

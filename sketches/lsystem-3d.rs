@@ -256,6 +256,8 @@ fn draw(scene: &mut Scene3D) {
 
     background(2, 1, 6);
     scene.orbit_enabled = true;
+    scene.auto_spin     = true;
+    scene.spin_speed    = 0.22;
     scene.camera.fov_y  = std::f32::consts::FRAC_PI_4;
     scene.clear();
 
