@@ -537,6 +537,9 @@ struct Gpu {
     msaa_samples: u32,
     surface_format: wgpu::TextureFormat,
     scale_factor: f64,
+    /// Persistent vertex buffer — grown on demand, never shrunk.
+    vertex_buf:     Option<wgpu::Buffer>,
+    vertex_buf_cap: u64,
 }
 
 fn create_msaa_texture(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32, samples: u32) -> Option<wgpu::TextureView> {
@@ -583,54 +586,58 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&self, bg: wgpu::Color, vertices: &[Vertex]) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        let surface_view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+    fn render(&mut self, bg: wgpu::Color, vertices: &[Vertex]) -> Result<(), wgpu::SurfaceError> {
+        let output      = self.surface.get_current_texture()?;
+        let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let (target_view, resolve_target) = match &self.msaa_view {
             Some(msaa) => (msaa, Some(&surface_view)),
-            None => (&surface_view, None),
+            None       => (&surface_view, None),
         };
 
-        let vertex_buffer = if !vertices.is_empty() {
-            Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("vertex buffer"),
-                contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            }))
-        } else {
-            None
-        };
+        // Upload vertices into the persistent buffer, growing it only when needed.
+        let bytes = bytemuck::cast_slice::<Vertex, u8>(vertices);
+        let has_verts = !bytes.is_empty();
+        if has_verts {
+            let needed = bytes.len() as u64;
+            if self.vertex_buf_cap < needed {
+                let cap = needed.next_power_of_two().max(4096);
+                self.vertex_buf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label:              Some("vertex buffer"),
+                    size:               cap,
+                    usage:              wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.vertex_buf_cap = cap;
+            }
+            self.queue.write_buffer(self.vertex_buf.as_ref().unwrap(), 0, bytes);
+        }
 
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("oripop render"),
-            });
+        let mut encoder = self.device.create_command_encoder(
+            &wgpu::CommandEncoderDescriptor { label: Some("oripop render") },
+        );
 
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("oripop pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_view,
+                    view:           target_view,
                     resolve_target,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(bg),
+                        load:  wgpu::LoadOp::Clear(bg),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
+                timestamp_writes:        None,
+                occlusion_query_set:     None,
             });
 
-            if let Some(ref vb) = vertex_buffer {
+            if has_verts {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-                pass.set_vertex_buffer(0, vb.slice(..));
+                pass.set_vertex_buffer(0, self.vertex_buf.as_ref().unwrap().slice(..));
                 pass.draw(0..vertices.len() as u32, 0..1);
             }
         }
@@ -790,6 +797,8 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         msaa_samples,
         surface_format: format,
         scale_factor,
+        vertex_buf:     None,
+        vertex_buf_cap: 0,
     }
 }
 
