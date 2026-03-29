@@ -36,3 +36,7 @@ path = "interactive-demo.rs"
 [[bin]]
 name = "textured-3d-demo"
 path = "textured-3d-demo.rs"
+
+[[bin]]
+name = "lsystem-3d"
+path = "lsystem-3d.rs"
