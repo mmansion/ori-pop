@@ -300,7 +300,7 @@ impl ApplicationHandler for Runner3D {
                 if self.orbit_rdown {
                     let dx = x - self.cur_x;
                     let dy = y - self.cur_y;
-                    self.orbit_az += dx * 0.005;
+                    self.orbit_az -= dx * 0.005;
                     self.orbit_el  = (self.orbit_el - dy * 0.005)
                         .clamp(-std::f32::consts::FRAC_PI_2 * 0.94,
                                 std::f32::consts::FRAC_PI_2 * 0.94);
