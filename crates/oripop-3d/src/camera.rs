@@ -3,6 +3,17 @@
 
 use glam::{Mat4, Vec3, Vec4};
 
+/// Remaps clip-space depth from OpenGL's [−1, 1] to wgpu's [0, 1].
+///
+/// Applied once per `view_proj` call: `z_wgpu = z_gl × 0.5 + w × 0.5`.
+/// Defined as a constant — the matrix never changes.
+const WGPU_DEPTH_REMAP: Mat4 = Mat4::from_cols(
+    Vec4::new(1.0, 0.0, 0.0, 0.0),
+    Vec4::new(0.0, 1.0, 0.0, 0.0),
+    Vec4::new(0.0, 0.0, 0.5, 0.0),
+    Vec4::new(0.0, 0.0, 0.5, 1.0),
+);
+
 /// Perspective camera.
 ///
 /// Coordinate convention: **Z-up right-handed** (ISO 80000-2, ROS, STEP).
@@ -45,16 +56,8 @@ impl Camera {
     /// OpenGL-style [−1, 1], so a depth-remapping matrix is applied:
     /// `z_wgpu = z_gl × 0.5 + w × 0.5`.
     pub fn view_proj(&self, aspect: f32) -> Mat4 {
-        let proj_gl = Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far);
-        let view    = Mat4::look_at_rh(self.eye, self.target, self.up);
-
-        // Remap clip-space depth from [−1, 1] → [0, 1]  (column-major).
-        let depth_fix = Mat4::from_cols(
-            Vec4::new(1.0, 0.0, 0.0, 0.0),
-            Vec4::new(0.0, 1.0, 0.0, 0.0),
-            Vec4::new(0.0, 0.0, 0.5, 0.0),
-            Vec4::new(0.0, 0.0, 0.5, 1.0),
-        );
-        depth_fix * proj_gl * view
+        let proj = Mat4::perspective_rh(self.fov_y, aspect, self.near, self.far);
+        let view = Mat4::look_at_rh(self.eye, self.target, self.up);
+        WGPU_DEPTH_REMAP * proj * view
     }
 }

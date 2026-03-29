@@ -245,17 +245,14 @@ impl ApplicationHandler for Runner3D {
 
             WindowEvent::CursorMoved { position, .. } => {
                 let sf = renderer.scale_factor as f32;
-                let x  = position.x as f32 / sf;
-                let y  = position.y as f32 / sf;
-                let pressed = oripop_core::draw::mouse_pressed();
-                oripop_core::draw::set_mouse(x, y, pressed);
+                oripop_core::draw::set_mouse_pos(
+                    position.x as f32 / sf,
+                    position.y as f32 / sf,
+                );
             }
 
             WindowEvent::MouseInput { state, .. } => {
-                let pressed = state == ElementState::Pressed;
-                let x = oripop_core::draw::mouse_x();
-                let y = oripop_core::draw::mouse_y();
-                oripop_core::draw::set_mouse(x, y, pressed);
+                oripop_core::draw::set_mouse_pressed(state == ElementState::Pressed);
             }
 
             WindowEvent::KeyboardInput { event: key_event, .. } => {

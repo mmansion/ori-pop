@@ -851,9 +851,20 @@ pub fn take_2d_vertices() -> (wgpu::Color, Vec<u8>) {
     })
 }
 
-/// Update mouse position and button state.
-/// Call from oripop-3d's event loop so that `mouse_x()`, `mouse_y()`,
-/// and `mouse_pressed()` return correct values inside draw callbacks.
+/// Update mouse position only, preserving the current pressed state.
+/// Call from `CursorMoved` in the event loop.
+pub fn set_mouse_pos(x: f32, y: f32) {
+    with_ctx(|ctx| { ctx.mouse_x = x; ctx.mouse_y = y; });
+}
+
+/// Update mouse button state only, preserving the current position.
+/// Call from `MouseInput` in the event loop.
+pub fn set_mouse_pressed(pressed: bool) {
+    with_ctx(|ctx| { ctx.mouse_pressed = pressed; });
+}
+
+/// Update all mouse state at once. Use the focused helpers above when only
+/// one component changes.
 pub fn set_mouse(x: f32, y: f32, pressed: bool) {
     with_ctx(|ctx| {
         ctx.mouse_x       = x;
