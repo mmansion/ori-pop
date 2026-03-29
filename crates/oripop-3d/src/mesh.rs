@@ -4,12 +4,12 @@
 //! X = right, Y = forward/depth, Z = up.
 //! The XY plane is the ground plane (fabrication bed).
 //!
-//! [`MeshKind::Sphere`] and [`MeshKind::Plane`] are now generated through
+//! [`MeshKind::Sphere`] and [`MeshKind::Plane`] are generated through
 //! `oripop-math`'s parametric surface layer — the same mathematical objects
 //! that feed the design tree, curvature analysis, and fabrication export.
+//! [`MeshKind::Cube`] remains hand-built until `oripop-geo` provides SDF/CSG.
 
 use bytemuck::{Pod, Zeroable};
-use std::f32::consts::PI;
 
 // ── Vertex ───────────────────────────────────────────────────────────────────
 
@@ -112,23 +112,6 @@ impl MeshKind {
 
 // ── Primitive generators — all Z-up right-handed ─────────────────────────────
 
-/// Flat XY plane centred at the origin, lying in the Z = 0 ground plane.
-///
-/// Normal points in the **+Z** direction (up).
-/// UV: (0,0) at (−size/2, −size/2), (1,1) at (+size/2, +size/2).
-pub fn plane(size: f32) -> Mesh {
-    let h = size * 0.5;
-    // CCW winding when viewed from +Z (top).
-    let vertices = vec![
-        Vertex3D { position: [-h, -h, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0, 0.0] },
-        Vertex3D { position: [ h, -h, 0.0], normal: [0.0, 0.0, 1.0], uv: [1.0, 0.0] },
-        Vertex3D { position: [ h,  h, 0.0], normal: [0.0, 0.0, 1.0], uv: [1.0, 1.0] },
-        Vertex3D { position: [-h,  h, 0.0], normal: [0.0, 0.0, 1.0], uv: [0.0, 1.0] },
-    ];
-    let indices = vec![0, 1, 2, 0, 2, 3];
-    Mesh { vertices, indices }
-}
-
 /// Axis-aligned cube centred at the origin, Z-up.
 ///
 /// +Z = top, −Z = bottom, −Y = front (toward default camera), +Y = back,
@@ -162,64 +145,6 @@ pub fn cube(size: f32) -> Mesh {
             vertices.push(Vertex3D { position: *pos, normal: *normal, uv: uvs[i] });
         }
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-
-    Mesh { vertices, indices }
-}
-
-/// UV sphere centred at the origin, **Z-up** (poles at ±Z).
-///
-/// `sectors` = horizontal (longitude) divisions.
-/// `stacks`  = vertical (latitude) divisions.
-/// Reasonable defaults: `uv_sphere(1.0, 48, 32)`.
-///
-/// UV: u ∈ [0,1] wraps longitude, v ∈ [0,1] goes from +Z pole to −Z pole.
-pub fn uv_sphere(radius: f32, sectors: u32, stacks: u32) -> Mesh {
-    let mut vertices: Vec<Vertex3D> = Vec::new();
-    let mut indices:  Vec<u32>      = Vec::new();
-
-    let sector_step = 2.0 * PI / sectors as f32;
-    let stack_step  = PI / stacks as f32;
-
-    for i in 0..=stacks {
-        // phi goes from +π/2 (north pole, +Z) to −π/2 (south pole, −Z).
-        let phi = PI / 2.0 - i as f32 * stack_step;
-        let xy  = radius * phi.cos(); // radius of the ring in the XY plane
-        let z   = radius * phi.sin(); // height along Z
-
-        for j in 0..=sectors {
-            let theta = j as f32 * sector_step;
-            let x     = xy * theta.cos();
-            let y     = xy * theta.sin();
-
-            let nx = x / radius;
-            let ny = y / radius;
-            let nz = z / radius;
-
-            let u = j as f32 / sectors as f32;
-            let v = i as f32 / stacks as f32;
-
-            vertices.push(Vertex3D {
-                position: [x, y, z],
-                normal:   [nx, ny, nz],
-                uv:       [u, v],
-            });
-        }
-    }
-
-    for i in 0..stacks {
-        let mut k1 = i * (sectors + 1);
-        let mut k2 = k1 + sectors + 1;
-        for _j in 0..sectors {
-            if i != 0 {
-                indices.extend_from_slice(&[k1, k2, k1 + 1]);
-            }
-            if i != stacks - 1 {
-                indices.extend_from_slice(&[k1 + 1, k2, k2 + 1]);
-            }
-            k1 += 1;
-            k2 += 1;
-        }
     }
 
     Mesh { vertices, indices }

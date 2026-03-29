@@ -160,17 +160,6 @@ pub fn numerical_curvature(s: &dyn Surface, u: f32, v: f32) -> PrincipalCurvatur
     PrincipalCurvatures { k1, k2, d1, d2 }
 }
 
-// Extension trait for Vec3 to add a fallback normalize
-pub(crate) trait NormalizeOr {
-    fn normalize_or(self, fallback: Vec3) -> Vec3;
-}
-impl NormalizeOr for Vec3 {
-    fn normalize_or(self, fallback: Vec3) -> Vec3 {
-        let l = self.length();
-        if l < 1e-10 { fallback } else { self / l }
-    }
-}
-
 // ── Standalone helpers ────────────────────────────────────────────────────────
 
 /// Check whether a surface is developable by sampling a coarse grid.

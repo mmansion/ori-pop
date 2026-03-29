@@ -101,8 +101,8 @@ pub struct Scene3D {
     /// Show the egui inspector panel. Toggle with the `Tab` key.
     pub show_inspector: bool,
 
-    pub(crate) objects:    Vec<Object3D>,
-    pub(crate) next_id:    u32,
+    pub(crate) objects: Vec<Object3D>,
+    next_id:            u32,
 }
 
 impl Scene3D {

@@ -198,12 +198,12 @@ pub fn generate_dots(params: &Params, t: f32) -> Vec<Dot> {
     let mut dots = Vec::with_capacity(params.distribution.dot_count as usize);
 
     while dots.len() < params.distribution.dot_count as usize {
-        let mut nx = rng.gen::<f32>();
-        let mut ny = rng.gen::<f32>();
+        let mut nx = rng.random::<f32>();
+        let mut ny = rng.random::<f32>();
 
         if params.distribution.jitter > 0.0 {
-            let jx = rng.gen_range(-params.distribution.jitter..=params.distribution.jitter);
-            let jy = rng.gen_range(-params.distribution.jitter..=params.distribution.jitter);
+            let jx = rng.random_range(-params.distribution.jitter..=params.distribution.jitter);
+            let jy = rng.random_range(-params.distribution.jitter..=params.distribution.jitter);
             nx = (nx + jx).clamp(0.0, 1.0);
             ny = (ny + jy).clamp(0.0, 1.0);
         }
@@ -212,14 +212,14 @@ pub fn generate_dots(params: &Params, t: f32) -> Vec<Dot> {
         let accept = weight
             .max(0.001)
             .powf(params.distribution.density_pow.max(0.01));
-        if rng.gen::<f32>() > accept {
+        if rng.random::<f32>() > accept {
             continue;
         }
 
         let radius = if let Some(fixed) = params.distribution.fixed_radius {
             fixed
         } else {
-            rng.gen_range(params.distribution.min_radius..=params.distribution.max_radius)
+            rng.random_range(params.distribution.min_radius..=params.distribution.max_radius)
         }
         .max(0.000_001);
 

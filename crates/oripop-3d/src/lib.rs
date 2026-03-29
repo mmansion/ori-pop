@@ -48,6 +48,7 @@
 //! ```
 
 pub mod camera;
+pub mod inspector;
 pub mod mesh;
 pub mod scene;
 mod renderer;
@@ -64,102 +65,6 @@ use winit::{
     event_loop::{ControlFlow, EventLoop},
     window::{Window, WindowId},
 };
-
-// ── Inspector UI ─────────────────────────────────────────────────────────────
-
-fn build_inspector(ui: &mut egui::Ui, scene: &mut Scene3D) {
-    use egui::{DragValue, Grid, Slider};
-
-    // ── Scene stats ────────────────────────────────────────────────────────
-    ui.heading("Scene");
-    Grid::new("scene_grid").num_columns(2).show(ui, |ui| {
-        ui.label("Time");
-        ui.label(format!("{:.2} s", scene.time));
-        ui.end_row();
-        ui.label("Objects");
-        ui.label(scene.objects.len().to_string());
-        ui.end_row();
-    });
-    ui.separator();
-
-    // ── Camera ─────────────────────────────────────────────────────────────
-    ui.collapsing("Camera", |ui| {
-        Grid::new("cam_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            ui.label("Eye X");
-            ui.add(DragValue::new(&mut scene.camera.eye.x).speed(0.05));
-            ui.end_row();
-            ui.label("Eye Y");
-            ui.add(DragValue::new(&mut scene.camera.eye.y).speed(0.05));
-            ui.end_row();
-            ui.label("Eye Z");
-            ui.add(DragValue::new(&mut scene.camera.eye.z).speed(0.05));
-            ui.end_row();
-            ui.label("Target X");
-            ui.add(DragValue::new(&mut scene.camera.target.x).speed(0.05));
-            ui.end_row();
-            ui.label("Target Y");
-            ui.add(DragValue::new(&mut scene.camera.target.y).speed(0.05));
-            ui.end_row();
-            ui.label("Target Z");
-            ui.add(DragValue::new(&mut scene.camera.target.z).speed(0.05));
-            ui.end_row();
-            ui.label("FOV (°)");
-            let mut fov_deg = scene.camera.fov_y.to_degrees();
-            if ui.add(Slider::new(&mut fov_deg, 10.0..=120.0)).changed() {
-                scene.camera.fov_y = fov_deg.to_radians();
-            }
-            ui.end_row();
-        });
-    });
-    ui.separator();
-
-    // ── Lighting ───────────────────────────────────────────────────────────
-    ui.collapsing("Lighting", |ui| {
-        Grid::new("light_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            ui.label("Direction X");
-            ui.add(DragValue::new(&mut scene.light_dir.x).speed(0.05));
-            ui.end_row();
-            ui.label("Direction Y");
-            ui.add(DragValue::new(&mut scene.light_dir.y).speed(0.05));
-            ui.end_row();
-            ui.label("Direction Z");
-            ui.add(DragValue::new(&mut scene.light_dir.z).speed(0.05));
-            ui.end_row();
-        });
-    });
-    ui.separator();
-
-    // ── Texture generation ─────────────────────────────────────────────────
-    ui.collapsing("Texture Generation", |ui| {
-        Grid::new("tex_grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
-            ui.label("Frequency");
-            ui.add(Slider::new(&mut scene.gen.frequency, 0.1_f32..=10.0));
-            ui.end_row();
-            ui.label("Octaves");
-            ui.add(Slider::new(&mut scene.gen.octaves, 1_u32..=8));
-            ui.end_row();
-            ui.label("Warp Strength");
-            ui.add(Slider::new(&mut scene.gen.warp_strength, 0.0_f32..=4.0));
-            ui.end_row();
-            ui.label("Seed");
-            ui.add(DragValue::new(&mut scene.gen.seed).speed(0.01));
-            ui.end_row();
-        });
-    });
-    ui.separator();
-
-    // ── Scene objects ──────────────────────────────────────────────────────
-    ui.collapsing("Objects", |ui| {
-        for obj in &scene.objects {
-            let label = obj.label.as_deref().unwrap_or("(unnamed)");
-            let kind  = format!("{:?}", obj.mesh);
-            ui.label(format!("• {} — {}", label, kind));
-        }
-        if scene.objects.is_empty() {
-            ui.label("No objects added this frame.");
-        }
-    });
-}
 
 // ── run3d ApplicationHandler ──────────────────────────────────────────────────
 
@@ -291,14 +196,7 @@ impl ApplicationHandler for Runner3D {
                             egui::SidePanel::right("inspector")
                                 .min_width(220.0)
                                 .resizable(true)
-                                .show(ctx, |ui| {
-                                    ui.heading("Inspector");
-                                    ui.small("Tab — toggle  │  drag values to edit");
-                                    ui.separator();
-                                    egui::ScrollArea::vertical().show(ui, |ui| {
-                                        build_inspector(ui, scene);
-                                    });
-                                });
+                                .show(ctx, |ui| inspector::draw(ui, scene));
                         }
                     });
                     egui_winit.handle_platform_output(window, full_output.platform_output.clone());
