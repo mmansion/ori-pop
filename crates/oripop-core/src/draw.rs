@@ -127,6 +127,8 @@ struct Context {
     height: u32,
     title: String,
     msaa_samples: u32,
+    /// When false, the event loop does not spin at max FPS; redraws are requested from input and resize only.
+    continuous_redraw: bool,
     state: DrawState,
     vertices: Vec<Vertex>,
     bg: wgpu::Color,
@@ -147,6 +149,7 @@ impl Context {
             height: 400,
             title: String::from("ori-pop"),
             msaa_samples: 4,
+            continuous_redraw: true,
             state: DrawState::default(),
             vertices: Vec::new(),
             bg: wgpu::Color::BLACK,
@@ -196,6 +199,13 @@ pub fn size(width: u32, height: u32) {
 /// Set the window title. Call before [`run`].
 pub fn title(t: &str) {
     with_ctx(|ctx| ctx.title = t.to_string());
+}
+
+/// When `true` (default), the window redraws every frame at display rate (good for animation).
+/// When `false`, redraws run only after input, resize, or an explicit need — much lower CPU
+/// for interactive editors. Call before [`run`].
+pub fn redraw_continuous(enabled: bool) {
+    with_ctx(|ctx| ctx.continuous_redraw = enabled);
 }
 
 /// Set anti-aliasing sample count. Valid values: 1 (off), 2, 4, 8.
@@ -915,6 +925,9 @@ impl ApplicationHandler for Runner2D {
             Arc::clone(&window), phys.width, phys.height, w, h, self.msaa,
         )));
         self.window = Some(window);
+        if let Some(win) = self.window.as_ref() {
+            win.request_redraw();
+        }
     }
 
     fn window_event(
@@ -950,17 +963,29 @@ impl ApplicationHandler for Runner2D {
                 }
             }
 
+            WindowEvent::CursorEntered { .. } => {
+                if !with_ctx(|ctx| ctx.continuous_redraw) {
+                    window.request_redraw();
+                }
+            }
+
             WindowEvent::CursorMoved { position, .. } => {
                 with_ctx(|ctx| {
                     ctx.mouse_x = position.x as f32 / gpu.scale_factor as f32;
                     ctx.mouse_y = position.y as f32 / gpu.scale_factor as f32;
                 });
+                if !with_ctx(|ctx| ctx.continuous_redraw) {
+                    window.request_redraw();
+                }
             }
 
             WindowEvent::MouseInput { state, .. } => {
                 with_ctx(|ctx| {
                     ctx.mouse_pressed = state == ElementState::Pressed;
                 });
+                if !with_ctx(|ctx| ctx.continuous_redraw) {
+                    window.request_redraw();
+                }
             }
 
             WindowEvent::KeyboardInput { event: key_event, .. } => {
@@ -975,6 +1000,9 @@ impl ApplicationHandler for Runner2D {
                         }
                     }
                 });
+                if !with_ctx(|ctx| ctx.continuous_redraw) {
+                    window.request_redraw();
+                }
             }
 
             _ => {}
@@ -983,7 +1011,9 @@ impl ApplicationHandler for Runner2D {
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         if let Some(window) = &self.window {
-            window.request_redraw();
+            if with_ctx(|ctx| ctx.continuous_redraw) {
+                window.request_redraw();
+            }
         }
     }
 }

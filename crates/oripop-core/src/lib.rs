@@ -21,7 +21,7 @@ pub mod line;
 pub mod point;
 pub mod prelude;
 
-pub use bezier::Bezier;
+pub use bezier::{Bezier, DensityProfile};
 pub use field::{
     Canvas, Distribution, Dot, Field, Force, Params, Render, Singularity,
     density_at, eval_force, field_at, generate_dots,

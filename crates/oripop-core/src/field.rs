@@ -10,7 +10,7 @@
 
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use crate::{Line, Point};
+use crate::{Bezier, DensityProfile, Line, Point};
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 
@@ -130,6 +130,14 @@ pub enum Force {
     Gradient  { along: Line, strength: f32 },
     /// Density ridge along a line with smoothstep falloff.
     Compression { axis: Line, width: f32, strength: f32 },
+    /// Density band around a cubic Bézier path in `[0,1]²`, modulated along the path by [`DensityProfile`].
+    BezierPath {
+        curve: Bezier,
+        profile: DensityProfile,
+        /// Same spirit as [`Attractor::falloff`]: larger values concentrate influence near the curve.
+        falloff: f32,
+        strength: f32,
+    },
 }
 
 /// Evaluate a single force at canvas position `(x, y)`.
@@ -152,6 +160,20 @@ pub fn eval_force(force: &Force, x: f32, y: f32) -> f32 {
             let dist = axis.distance(&p);
             let t    = (dist / width.max(0.0001)).min(1.0);
             strength * (1.0 - smoothstep(t))
+        }
+        Force::BezierPath {
+            curve,
+            profile,
+            falloff,
+            strength,
+        } => {
+            let t = curve.closest_param(&p, 72);
+            let q = curve.eval(t);
+            let dx = p.x - q.x;
+            let dy = p.y - q.y;
+            let d2 = dx * dx + dy * dy;
+            let radial = strength / (1.0 + falloff.max(0.0) * d2);
+            radial * profile.multiplier_at(t)
         }
     }
 }
@@ -350,5 +372,24 @@ mod tests {
         let mut p = Params::default();
         p.distribution.dot_count = 12_345;
         assert_eq!(generate_dots(&p, 0.5).len(), 12_345);
+    }
+
+    #[test]
+    fn bezier_path_force_on_curve() {
+        let curve = Bezier::new(
+            Point::new(0.5, 0.0),
+            Point::new(0.5, 0.33),
+            Point::new(0.5, 0.66),
+            Point::new(0.5, 1.0),
+        );
+        let f = Force::BezierPath {
+            curve,
+            profile: DensityProfile::default(),
+            falloff: 100.0,
+            strength: 1.0,
+        };
+        let v = eval_force(&f, 0.5, 0.5);
+        assert!(v > 0.3 && v <= 1.0);
+        assert!(eval_force(&f, 0.0, 0.0) < v);
     }
 }
