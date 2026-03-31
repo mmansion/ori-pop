@@ -45,7 +45,7 @@ impl CaptureState {
             self.frame_count   = 0;
             log::info!("Recording stopped.");
         } else {
-            let dir = PathBuf::from(format!("recording_{}", timestamp()));
+            let dir = output_dir().join(format!("recording_{}", timestamp()));
             if let Err(e) = std::fs::create_dir_all(&dir) {
                 log::error!("Could not create recording dir: {e}");
                 return;
@@ -61,10 +61,13 @@ impl CaptureState {
     ///
     /// Call once per frame.  For a screenshot this returns `Some` exactly
     /// once; for recording it returns `Some` every frame while active.
+    ///
+    /// All output is written into the `output/` directory in the working
+    /// directory (project root).  The folder is created on first use.
     pub fn needs_capture(&mut self) -> Option<PathBuf> {
         if self.screenshot_pending {
             self.screenshot_pending = false;
-            let path = PathBuf::from(format!("screenshot_{}.png", timestamp()));
+            let path = output_dir().join(format!("screenshot_{}.png", timestamp()));
             return Some(path);
         }
         if self.recording {
@@ -177,4 +180,11 @@ fn timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Returns the `output/` directory path, creating it if it does not exist.
+fn output_dir() -> PathBuf {
+    let dir = PathBuf::from("output");
+    std::fs::create_dir_all(&dir).ok();
+    dir
 }
