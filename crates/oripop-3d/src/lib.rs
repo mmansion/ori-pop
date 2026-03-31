@@ -270,6 +270,7 @@ impl ApplicationHandler for Runner3D {
 
         self.scene.width  = (phys.width  as f64 / scale_factor) as f32;
         self.scene.height = (phys.height as f64 / scale_factor) as f32;
+        self.capture.update_surface(phys.width, phys.height, renderer.surface_format);
 
         self.egui_renderer = Some(egui_renderer);
         self.renderer      = Some(renderer);
@@ -349,6 +350,7 @@ impl ApplicationHandler for Runner3D {
                 renderer.update_2d_resolution(lw, lh);
                 self.scene.width  = lw;
                 self.scene.height = lh;
+                self.capture.update_surface(sz.width, sz.height, renderer.surface_format);
                 if let Some(w) = self.window.as_ref() {
                     w.request_redraw();
                 }
@@ -448,15 +450,14 @@ impl ApplicationHandler for Runner3D {
                 // ── Optional capture (screenshot / recording) ──────────────
                 // Must happen after all render passes but before present(),
                 // while the surface texture is still valid for COPY_SRC.
-                if let Some(path) = self.capture.needs_capture() {
-                    let [w, h] = renderer.phys_size();
-                    capture::save_frame(
-                        &renderer.device,
-                        &renderer.queue,
-                        &output.texture,
-                        w, h,
-                        renderer.surface_format,
-                        &path,
+                if self.capture.screenshot_pending {
+                    self.capture.take_screenshot(
+                        &renderer.device, &renderer.queue, &output.texture,
+                    );
+                }
+                if self.capture.recording {
+                    self.capture.record_frame(
+                        &renderer.device, &renderer.queue, &output.texture,
                     );
                 }
 
