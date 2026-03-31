@@ -208,6 +208,11 @@ pub fn redraw_continuous(enabled: bool) {
     with_ctx(|ctx| ctx.continuous_redraw = enabled);
 }
 
+/// Current value set by [`redraw_continuous`] (default `true`). Used by `run3d` to avoid idle redraws.
+pub fn continuous_redraw_enabled() -> bool {
+    with_ctx(|ctx| ctx.continuous_redraw)
+}
+
 /// Set anti-aliasing sample count. Valid values: 1 (off), 2, 4, 8.
 /// Default is 4. Call before run().
 pub fn smooth(samples: u32) {
@@ -993,10 +998,16 @@ impl ApplicationHandler for Runner2D {
                 with_ctx(|ctx| {
                     ctx.key_pressed = pressed;
                     if pressed {
-                        if let winit::keyboard::Key::Character(ref c) = key_event.logical_key {
-                            if let Some(ch) = c.chars().next() {
-                                ctx.key_code = ch;
+                        match &key_event.logical_key {
+                            winit::keyboard::Key::Character(c) => {
+                                if let Some(ch) = c.chars().next() {
+                                    ctx.key_code = ch;
+                                }
                             }
+                            winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => {
+                                ctx.key_code = ' ';
+                            }
+                            _ => {}
                         }
                     }
                 });

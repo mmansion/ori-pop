@@ -7,7 +7,7 @@
 //! Coordinate convention: Z-up right-handed.
 //!   X = right, Y = depth/forward, Z = up, XY = ground plane.
 //!
-//! Press Tab to toggle the live inspector panel.
+//! Press Space to toggle the live inspector panel.
 //!
 //! Run with:
 //!   cargo run --bin textured-3d-demo
@@ -23,6 +23,9 @@ fn main() {
 
 fn draw(scene: &mut Scene3D) {
     let t = scene.time;
+
+    // Scripted camera path below — disable global orbit so it is not overwritten after this callback.
+    scene.orbit_enabled = false;
 
     // ── Background clear colour ─────────────────────────────────────────────
     background(6, 4, 14);

@@ -17,7 +17,18 @@
 //! - Seamless 2D overlay: any `oripop-core` drawing call inside the draw
 //!   callback is composited on top of the 3D scene in the same frame.
 //! - Live **egui inspector panel** — shows camera, light, texture-gen params,
-//!   and scene objects.  Toggle visibility with the **Tab** key.
+//!   and scene objects. Toggle visibility with the **Space** key.
+//!
+//! ## Orbit camera (`Scene3D::orbit_enabled`)
+//!
+//! Enabled by default on [`Scene3D`]. Sketches that animate [`Camera::eye`] themselves should set
+//! [`Scene3D::orbit_enabled`] to `false` each frame. When enabled, viewport navigation matches common
+//! 3D apps (Blender-style):
+//! - **Right mouse** drag — orbit (tumble) around the look target.
+//! - **Middle mouse** drag — pan (slide the look target in the view plane, like many CAD / DCC tools).
+//! - **Scroll wheel** — zoom. In **perspective**, dolly by changing eye distance; in **orthographic**,
+//!   adjust [`Camera::ortho_half_height`] (distance alone does not change scale). The wheel zooms the
+//!   3D view only when the pointer is **not** over an egui panel; over the Inspector, the wheel scrolls UI.
 //!
 //! ## Quickstart
 //!
@@ -48,14 +59,17 @@
 //! ```
 
 pub mod camera;
+pub mod capture;
 pub mod inspector;
 pub mod mesh;
 pub mod scene;
 mod renderer;
 
-pub use camera::Camera;
+pub use camera::{Camera, Projection};
 pub use mesh::MeshKind;
-pub use scene::{ObjectId, Scene3D, TextureGenParams, Object3D};
+pub use scene::{
+    ObjectId, ObjectTexture, Scene3D, TextureGenParams, Object3D, STIPPLE_CANVAS_SIZE,
+};
 
 use std::sync::Arc;
 use winit::{
@@ -93,13 +107,18 @@ struct Runner3D {
     orbit_target: glam::Vec3,
     /// Whether orbit state has been engaged (right-drag or scroll used).
     orbit_on:     bool,
-    /// Right mouse button is currently held.
+    /// Right mouse button is currently held (orbit drag).
     orbit_rdown:  bool,
+    /// Middle mouse button is currently held (pan drag in the view plane).
+    orbit_mdown:  bool,
     /// Last known mouse position (logical pixels) for delta computation.
     cur_x:        f32,
     cur_y:        f32,
     /// scene.time at the previous frame — used to compute dt for auto-spin.
     prev_time:    f32,
+
+    /// Screenshot / recording state.
+    capture:      capture::CaptureState,
 }
 
 impl Runner3D {
@@ -130,10 +149,85 @@ impl Runner3D {
             orbit_target: glam::Vec3::ZERO,
             orbit_on:     false,
             orbit_rdown:  false,
+            orbit_mdown:  false,
             cur_x:        0.0,
             cur_y:        0.0,
             prev_time:    0.0,
+            capture:      capture::CaptureState::default(),
         }
+    }
+
+    /// Copy eye–target into spherical orbit state (call before first drag / zoom after external camera edits).
+    fn sync_orbit_from_camera(&mut self) {
+        let eye = self.scene.camera.eye;
+        let target = self.scene.camera.target;
+        let dir = eye - target;
+        let r = dir.length().max(0.01);
+        self.orbit_r = r;
+        self.orbit_target = target;
+        let zn = (dir.z / r).clamp(-1.0, 1.0);
+        self.orbit_el = zn.asin();
+        self.orbit_az = dir.y.atan2(dir.x);
+    }
+
+    /// Scroll-wheel zoom: perspective dollies [`orbit_r`]; orthographic scales [`Camera::ortho_half_height`].
+    fn apply_orbit_zoom(&mut self, scroll: f32) {
+        if !self.orbit_on {
+            self.sync_orbit_from_camera();
+        }
+        let factor = 1.0 - scroll * 0.12;
+        let factor = factor.clamp(0.85, 1.15);
+        match self.scene.camera.projection {
+            Projection::Perspective => {
+                self.orbit_r = (self.orbit_r * factor).clamp(0.05, 500.0);
+            }
+            Projection::Orthographic => {
+                let hh = self.scene.camera.ortho_half_height * factor;
+                self.scene.camera.ortho_half_height = hh.clamp(0.02, 500.0);
+            }
+        }
+        self.orbit_on = true;
+    }
+
+    /// Pan the orbit target in the camera view plane (screen-space drag).
+    fn apply_orbit_pan(&mut self, dx: f32, dy: f32) {
+        let eye = self.scene.camera.eye;
+        let target = self.orbit_target;
+        let forward = (target - eye).normalize();
+        if !forward.is_finite() {
+            return;
+        }
+
+        let mut world_up = self.scene.camera.up;
+        if world_up.length_squared() < 1e-12 {
+            world_up = glam::Vec3::Z;
+        } else {
+            world_up = world_up.normalize();
+        }
+
+        let mut right = forward.cross(world_up);
+        if right.length_squared() < 1e-10 {
+            // Gimbal-safe fallback when forward ∥ world_up
+            let alt = if forward.z.abs() > 0.95 {
+                glam::Vec3::X
+            } else {
+                glam::Vec3::Z
+            };
+            right = forward.cross(alt);
+        }
+        let right = right.normalize();
+        let cam_up = right.cross(forward).normalize();
+
+        let scale = match self.scene.camera.projection {
+            Projection::Perspective => self.orbit_r * 0.003,
+            Projection::Orthographic => self.scene.camera.ortho_half_height * 0.006,
+        }
+        .max(1e-8);
+
+        // Horizontal: grab-drag (target moves opposite to RMB orbit convention). Vertical: dy>0 (mouse
+        // down) moves the view down — target shifts +cam_up here so it matches screen motion.
+        self.orbit_target -= right * (dx * scale) - cam_up * (dy * scale);
+        self.orbit_on = true;
     }
 }
 
@@ -181,6 +275,9 @@ impl ApplicationHandler for Runner3D {
         self.renderer      = Some(renderer);
         self.egui_winit    = Some(egui_winit);
         self.window        = Some(window);
+        if let Some(w) = self.window.as_ref() {
+            w.request_redraw();
+        }
     }
 
     fn window_event(
@@ -189,7 +286,43 @@ impl ApplicationHandler for Runner3D {
         _: WindowId,
         event: WindowEvent,
     ) {
-        // Feed the event to egui-winit first; if egui consumes it skip app logic.
+        // Global convention: Space toggles GUI overlays even when egui currently has focus.
+        if let WindowEvent::KeyboardInput { event: key_event, .. } = &event {
+            let pressed = key_event.state == ElementState::Pressed;
+            if pressed
+                && matches!(
+                    key_event.logical_key,
+                    winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space)
+                )
+            {
+                self.scene.show_inspector = !self.scene.show_inspector;
+                if !oripop_core::draw::continuous_redraw_enabled() {
+                    if let Some(w) = &self.window {
+                        w.request_redraw();
+                    }
+                }
+            }
+        }
+
+        // Viewport zoom must run **before** egui: egui-winit often marks [`MouseWheel`] consumed, which
+        // would otherwise skip our handler entirely. Zoom when the pointer is on the 3D view:
+        // inspector closed → whole window; inspector open → use egui hover (not over a panel).
+        if let WindowEvent::MouseWheel { delta, .. } = &event {
+            if self.scene.orbit_enabled {
+                let on_viewport = !self.scene.show_inspector
+                    || !self.egui_ctx.is_pointer_over_area();
+                if on_viewport {
+                    use winit::event::MouseScrollDelta;
+                    let scroll = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => *y,
+                        MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.01,
+                    };
+                    self.apply_orbit_zoom(scroll);
+                }
+            }
+        }
+
+        // Feed the event to egui-winit; if egui consumes it skip remaining app logic.
         if let (Some(egui_winit), Some(window)) = (self.egui_winit.as_mut(), self.window.as_ref()) {
             let response = egui_winit.on_window_event(window, &event);
             if response.consumed {
@@ -197,23 +330,33 @@ impl ApplicationHandler for Runner3D {
             }
         }
 
-        let (Some(window), Some(renderer)) =
-            (self.window.as_ref(), self.renderer.as_mut()) else { return };
-
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
+            WindowEvent::CursorEntered { .. } => {
+                if !oripop_core::draw::continuous_redraw_enabled() {
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
+                }
+            }
+
             WindowEvent::Resized(sz) => {
+                let Some(renderer) = self.renderer.as_mut() else { return };
                 renderer.resize(sz.width, sz.height);
                 let lw = (sz.width  as f64 / renderer.scale_factor) as f32;
                 let lh = (sz.height as f64 / renderer.scale_factor) as f32;
                 renderer.update_2d_resolution(lw, lh);
                 self.scene.width  = lw;
                 self.scene.height = lh;
-                window.request_redraw();
+                if let Some(w) = self.window.as_ref() {
+                    w.request_redraw();
+                }
             }
 
             WindowEvent::RedrawRequested => {
+                let (Some(window), Some(renderer)) =
+                    (self.window.as_ref(), self.renderer.as_mut()) else { return };
                 self.scene.time = self.start.elapsed().as_secs_f32();
                 let dt = (self.scene.time - self.prev_time).clamp(0.0, 0.05);
                 self.prev_time = self.scene.time;
@@ -221,7 +364,7 @@ impl ApplicationHandler for Runner3D {
                 // ── Auto-spin ──────────────────────────────────────────────
                 // Rotate the orbit azimuth automatically, pausing while the
                 // right button is held so manual dragging feels uninterrupted.
-                if self.scene.auto_spin && !self.orbit_rdown {
+                if self.scene.auto_spin && !self.orbit_rdown && !self.orbit_mdown {
                     self.orbit_az -= self.scene.spin_speed * dt;
                     self.orbit_on  = true; // ensure orbit is active
                 }
@@ -253,12 +396,13 @@ impl ApplicationHandler for Runner3D {
                 let egui_output = if let Some(egui_winit) = self.egui_winit.as_mut() {
                     let raw_input   = egui_winit.take_egui_input(window);
                     let scene       = &mut self.scene;
+                    let capture = &self.capture;
                     let full_output = self.egui_ctx.run(raw_input, |ctx| {
                         if scene.show_inspector {
                             egui::SidePanel::right("inspector")
                                 .min_width(220.0)
                                 .resizable(true)
-                                .show(ctx, |ui| inspector::draw(ui, scene));
+                                .show(ctx, |ui| inspector::draw(ui, scene, capture));
                         }
                     });
                     egui_winit.handle_platform_output(window, full_output.platform_output.clone());
@@ -301,28 +445,57 @@ impl ApplicationHandler for Runner3D {
                     );
                 }
 
+                // ── Optional capture (screenshot / recording) ──────────────
+                // Must happen after all render passes but before present(),
+                // while the surface texture is still valid for COPY_SRC.
+                if let Some(path) = self.capture.needs_capture() {
+                    let [w, h] = renderer.phys_size();
+                    capture::save_frame(
+                        &renderer.device,
+                        &renderer.queue,
+                        &output.texture,
+                        w, h,
+                        renderer.surface_format,
+                        &path,
+                    );
+                }
+
                 // ── Single present for the whole frame ──────────────────────
                 output.present();
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                let sf  = renderer.scale_factor as f32;
+                let sf  = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| r.scale_factor as f32)
+                    .unwrap_or(1.0);
                 let x   = position.x as f32 / sf;
                 let y   = position.y as f32 / sf;
                 oripop_core::draw::set_mouse_pos(x, y);
 
-                // Update orbit angles while right button is held.
-                if self.orbit_rdown {
+                if self.scene.orbit_enabled {
                     let dx = x - self.cur_x;
                     let dy = y - self.cur_y;
-                    self.orbit_az -= dx * 0.005;
-                    self.orbit_el  = (self.orbit_el + dy * 0.005)
-                        .clamp(-std::f32::consts::FRAC_PI_2 * 0.94,
-                                std::f32::consts::FRAC_PI_2 * 0.94);
-                    self.orbit_on  = true;
+                    // RMB: tumble (spherical orbit). MMB: pan target in the view plane.
+                    if self.orbit_rdown {
+                        self.orbit_az -= dx * 0.005;
+                        self.orbit_el = (self.orbit_el + dy * 0.005)
+                            .clamp(-std::f32::consts::FRAC_PI_2 * 0.94,
+                                   std::f32::consts::FRAC_PI_2 * 0.94);
+                        self.orbit_on = true;
+                    }
+                    if self.orbit_mdown {
+                        self.apply_orbit_pan(dx, dy);
+                    }
                 }
                 self.cur_x = x;
                 self.cur_y = y;
+                if !oripop_core::draw::continuous_redraw_enabled() {
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
+                }
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
@@ -333,61 +506,65 @@ impl ApplicationHandler for Runner3D {
                     }
                     winit::event::MouseButton::Right => {
                         self.orbit_rdown = pressed;
-                        if pressed {
-                            // Capture current camera spherical coordinates.
-                            let eye    = self.scene.camera.eye;
-                            let target = self.scene.camera.target;
-                            let dir    = eye - target;
-                            let r      = dir.length().max(0.1);
-                            self.orbit_r      = r;
-                            self.orbit_target = target;
-                            self.orbit_el     = (dir.z / r).asin();
-                            self.orbit_az     = dir.y.atan2(dir.x);
+                        if pressed && self.scene.orbit_enabled {
+                            self.sync_orbit_from_camera();
+                            self.orbit_on = true;
+                        }
+                    }
+                    winit::event::MouseButton::Middle => {
+                        self.orbit_mdown = pressed;
+                        if pressed && self.scene.orbit_enabled {
+                            self.sync_orbit_from_camera();
+                            self.orbit_on = true;
                         }
                     }
                     _ => {}
                 }
+                if !oripop_core::draw::continuous_redraw_enabled() {
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
+                }
             }
 
-            WindowEvent::MouseWheel { delta, .. } => {
-                use winit::event::MouseScrollDelta;
-                let scroll = match delta {
-                    MouseScrollDelta::LineDelta(_, y)  => y,
-                    MouseScrollDelta::PixelDelta(pos)  => pos.y as f32 * 0.01,
-                };
-                // If orbit not yet engaged, capture camera state first.
-                if !self.orbit_on {
-                    let eye    = self.scene.camera.eye;
-                    let target = self.scene.camera.target;
-                    let dir    = eye - target;
-                    let r      = dir.length().max(0.1);
-                    self.orbit_r      = r;
-                    self.orbit_target = target;
-                    self.orbit_el     = (dir.z / r).asin();
-                    self.orbit_az     = dir.y.atan2(dir.x);
+            WindowEvent::MouseWheel { .. } => {
+                // Zoom is applied before egui (see above) so it still runs when egui consumes the wheel.
+                if !oripop_core::draw::continuous_redraw_enabled() {
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
                 }
-                self.orbit_r  = (self.orbit_r * (1.0 - scroll * 0.12)).clamp(0.3, 80.0);
-                self.orbit_on = true;
             }
 
             WindowEvent::KeyboardInput { event: key_event, .. } => {
                 let pressed = key_event.state == ElementState::Pressed;
 
-                // Toggle inspector on Space.
+                // Capture shortcuts — handled before passing to the sketch.
                 if pressed {
-                    if let winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) =
-                        key_event.logical_key
-                    {
-                        self.scene.show_inspector = !self.scene.show_inspector;
+                    if let winit::keyboard::Key::Character(ref s) = key_event.logical_key {
+                        match s.as_str() {
+                            "s" | "S" => self.capture.request_screenshot(),
+                            "r" | "R" => self.capture.toggle_recording(),
+                            _ => {}
+                        }
                     }
                 }
 
                 let code = if pressed {
-                    if let winit::keyboard::Key::Character(ref s) = key_event.logical_key {
-                        s.chars().next().unwrap_or('\0')
-                    } else { '\0' }
-                } else { '\0' };
+                    match &key_event.logical_key {
+                        winit::keyboard::Key::Character(s) => s.chars().next().unwrap_or('\0'),
+                        winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space) => ' ',
+                        _ => '\0',
+                    }
+                } else {
+                    '\0'
+                };
                 oripop_core::draw::set_key(pressed, code);
+                if !oripop_core::draw::continuous_redraw_enabled() {
+                    if let Some(w) = self.window.as_ref() {
+                        w.request_redraw();
+                    }
+                }
             }
 
             _ => {}
@@ -396,7 +573,9 @@ impl ApplicationHandler for Runner3D {
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         if let Some(window) = &self.window {
-            window.request_redraw();
+            if oripop_core::draw::continuous_redraw_enabled() {
+                window.request_redraw();
+            }
         }
     }
 }
@@ -414,6 +593,9 @@ impl ApplicationHandler for Runner3D {
 ///   rendered as a depth-free overlay on top of the 3D scene.
 ///
 /// Press **Space** to toggle the live inspector panel.
+///
+/// With [`Scene3D::orbit_enabled`], use **RMB drag** to orbit, **MMB drag** to pan, and **wheel** to
+/// zoom the 3D view (wheel over the Inspector scrolls egui). See the crate-level docs for details.
 ///
 /// This function blocks until the window is closed.
 pub fn run3d(draw_fn: fn(&mut Scene3D)) {
@@ -448,7 +630,7 @@ pub fn run3d(draw_fn: fn(&mut Scene3D)) {
 /// ```
 ///
 /// Includes the full `oripop_core` 2D drawing API plus all 3D types.
-pub mod prelude {
+    pub mod prelude {
     pub use oripop_core::prelude::*;
     pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
     pub use crate::{
@@ -457,7 +639,10 @@ pub mod prelude {
         MeshKind,
         Object3D,
         ObjectId,
+        ObjectTexture,
+        Projection,
         Scene3D,
         TextureGenParams,
+        STIPPLE_CANVAS_SIZE,
     };
 }

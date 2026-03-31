@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 bytemuck.workspace = true
 egui.workspace = true
+image.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true
 glam.workspace = true

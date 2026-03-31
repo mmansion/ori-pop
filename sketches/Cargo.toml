@@ -38,6 +38,10 @@ name = "curves-demo"
 path = "curves-demo.rs"
 
 [[bin]]
+name = "curves-3d-demo"
+path = "curves-3d-demo.rs"
+
+[[bin]]
 name = "textured-3d-demo"
 path = "textured-3d-demo.rs"
 

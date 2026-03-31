@@ -392,4 +392,37 @@ mod tests {
         assert!(v > 0.3 && v <= 1.0);
         assert!(eval_force(&f, 0.0, 0.0) < v);
     }
+
+    /// Normalized canvas is top-left origin, y grows down (same as drawing). Density must peak
+    /// near the curve’s physical band, not mirrored to the opposite side.
+    #[test]
+    fn bezier_path_density_near_horizontal_band_not_mirrored() {
+        let yc = 0.82_f32;
+        let flat = DensityProfile {
+            y0: 1.0,
+            y1: 1.0,
+            y2: 1.0,
+            y3: 1.0,
+            t1: 1.0 / 3.0,
+            t2: 2.0 / 3.0,
+        };
+        let curve = Bezier::new(
+            Point::new(0.0, yc),
+            Point::new(0.33, yc),
+            Point::new(0.66, yc),
+            Point::new(1.0, yc),
+        );
+        let f = Force::BezierPath {
+            curve,
+            profile: flat,
+            falloff: 80.0,
+            strength: 1.0,
+        };
+        let on = eval_force(&f, 0.5, yc);
+        let mirrored = eval_force(&f, 0.5, 1.0 - yc);
+        assert!(
+            on > mirrored * 4.0,
+            "expected peak on curve at y={yc}, got on={on} vs mirrored_y={mirrored}"
+        );
+    }
 }

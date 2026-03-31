@@ -11,7 +11,10 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::{mesh::{MeshKind, Vertex3D}, scene::Scene3D};
+use crate::{
+    mesh::{MeshKind, Vertex3D},
+    scene::{ObjectTexture, Scene3D, STIPPLE_CANVAS_SIZE},
+};
 
 // ── GPU-side uniform structs ─────────────────────────────────────────────────
 //
@@ -107,6 +110,9 @@ pub(crate) struct Renderer {
     uniform_3d_bg_layout: wgpu::BindGroupLayout,
     uniform_3d_bg:        wgpu::BindGroup,
     texture_bg:           wgpu::BindGroup,
+    /// CPU-uploaded stipple / flat art for [`ObjectTexture::StippleCanvas`].
+    stipple_texture:      wgpu::Texture,
+    texture_bg_stipple:   wgpu::BindGroup,
     uniform_slot_size:    u64,
 
     // Pre-built mesh primitives
@@ -208,7 +214,9 @@ impl Renderer {
             .unwrap_or(caps.present_modes[0]);
 
         let config = wgpu::SurfaceConfiguration {
-            usage:                       wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // COPY_SRC allows reading the surface texture back to CPU for
+            // screenshot and video recording capture.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             format,
             width:                       phys_w,
             height:                      phys_h,
@@ -347,6 +355,36 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding:  0,
                     resource: wgpu::BindingResource::TextureView(&gen_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding:  1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+        });
+
+        let stipple_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("stipple canvas texture"),
+            size:            wgpu::Extent3d {
+                width:                 STIPPLE_CANVAS_SIZE,
+                height:                STIPPLE_CANVAS_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Rgba8Unorm,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        let stipple_texture_view = stipple_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let texture_bg_stipple = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("texture bg stipple"),
+            layout:  &texture_bg_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding:  0,
+                    resource: wgpu::BindingResource::TextureView(&stipple_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding:  1,
@@ -560,6 +598,8 @@ impl Renderer {
             uniform_3d_bg_layout,
             uniform_3d_bg,
             texture_bg,
+            stipple_texture,
+            texture_bg_stipple,
             uniform_slot_size: slot_size,
             meshes,
             pipeline_2d,
@@ -628,6 +668,33 @@ impl Renderer {
             _pad0: 0.0, _pad1: 0.0, _pad2: 0.0,
         };
         self.queue.write_buffer(&self.gen_params_buf, 0, bytemuck::bytes_of(&gp));
+
+        let stipple_bytes = (STIPPLE_CANVAS_SIZE * STIPPLE_CANVAS_SIZE * 4) as usize;
+        let need_stipple = scene
+            .objects
+            .iter()
+            .any(|o| o.texture == ObjectTexture::StippleCanvas);
+        if need_stipple && scene.stipple_canvas.len() == stipple_bytes {
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &self.stipple_texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d::ZERO,
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                &scene.stipple_canvas,
+                wgpu::TexelCopyBufferLayout {
+                    offset:         0,
+                    bytes_per_row:  Some(4 * STIPPLE_CANVAS_SIZE),
+                    rows_per_image: Some(STIPPLE_CANVAS_SIZE),
+                },
+                wgpu::Extent3d {
+                    width:                 STIPPLE_CANVAS_SIZE,
+                    height:                STIPPLE_CANVAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
 
         // ── Write per-object 3D uniforms ───────────────────────────────────
 
@@ -709,9 +776,14 @@ impl Renderer {
             });
 
             pass.set_pipeline(&self.pipeline_3d);
-            pass.set_bind_group(1, &self.texture_bg, &[]);
 
             for (i, obj) in scene.objects.iter().enumerate() {
+                let tex_bg = match obj.texture {
+                    ObjectTexture::Gen => &self.texture_bg,
+                    ObjectTexture::StippleCanvas => &self.texture_bg_stipple,
+                };
+                pass.set_bind_group(1, tex_bg, &[]);
+
                 let dyn_offset = (i as u64 * self.uniform_slot_size) as u32;
                 pass.set_bind_group(0, &self.uniform_3d_bg, &[dyn_offset]);
 

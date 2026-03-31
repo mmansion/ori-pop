@@ -5,6 +5,9 @@
 use glam::{Mat4, Vec3};
 use crate::{camera::Camera, mesh::MeshKind};
 
+/// Width and height in pixels of [`Scene3D::stipple_canvas`]. RGBA8 row-major (`width * height * 4` bytes).
+pub const STIPPLE_CANVAS_SIZE: u32 = 1024;
+
 // ── Object identity ───────────────────────────────────────────────────────────
 
 /// Unique handle for a scene object.  Returned by [`Scene3D::add`].
@@ -38,6 +41,18 @@ impl Default for TextureGenParams {
     }
 }
 
+// ── Object texture source ────────────────────────────────────────────────────
+
+/// Which texture the 3D fragment shader samples for this object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ObjectTexture {
+    /// Procedural texture from the GPU compute pass (FBM).
+    #[default]
+    Gen,
+    /// RGBA8 image in [`Scene3D::stipple_canvas`], uploaded before the 3D pass each frame.
+    StippleCanvas,
+}
+
 // ── Scene object ──────────────────────────────────────────────────────────────
 
 /// A single mesh instance placed in the world.
@@ -52,6 +67,8 @@ pub struct Object3D {
     pub transform: Mat4,
     /// Whether this object is visible. Default: true.
     pub visible:   bool,
+    /// Texture binding for the 3D shader. Default: [`ObjectTexture::Gen`].
+    pub texture:   ObjectTexture,
 }
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
@@ -98,12 +115,13 @@ pub struct Scene3D {
     /// Logical pixel height of the window (updated on resize).
     pub height: f32,
 
-    /// Show the egui inspector panel. Toggle with the **Tab** key. Default: `false`.
+    /// Show the egui inspector panel. Toggle with the **Space** key. Default: `false`.
     pub show_inspector: bool,
 
-    /// When `true`, right-click drag orbits the camera and the scroll wheel
-    /// zooms.  Set this in your draw callback and do **not** overwrite
-    /// `scene.camera.eye` — the runner manages it.
+    /// When `true` (default), **RMB** drag orbits, **MMB** drag pans in the view plane, and the wheel
+    /// zooms the 3D view. Turn off for a fixed camera the sketch sets each frame. While enabled, do
+    /// **not** overwrite `scene.camera.eye` / `target` — the runner applies orbit after [`crate::run3d`]'s
+    /// draw callback.
     pub orbit_enabled: bool,
 
     /// When `true`, the camera automatically spins around the scene.
@@ -113,8 +131,20 @@ pub struct Scene3D {
     /// Speed of the auto-spin in radians per second. Default: `0.25`.
     pub spin_speed: f32,
 
+    /// RGBA8 pixels for [`ObjectTexture::StippleCanvas`], size `STIPPLE_CANVAS_SIZE² × 4`.
+    pub stipple_canvas: Vec<u8>,
+
     pub(crate) objects: Vec<Object3D>,
     next_id:            u32,
+}
+
+fn stipple_canvas_initial() -> Vec<u8> {
+    let n = (STIPPLE_CANVAS_SIZE * STIPPLE_CANVAS_SIZE * 4) as usize;
+    let mut v = Vec::with_capacity(n);
+    for _ in 0..(STIPPLE_CANVAS_SIZE * STIPPLE_CANVAS_SIZE) {
+        v.extend_from_slice(&[10, 10, 14, 255]);
+    }
+    v
 }
 
 impl Scene3D {
@@ -127,9 +157,10 @@ impl Scene3D {
             width,
             height,
             show_inspector: false,
-            orbit_enabled:  false,
+            orbit_enabled:  true,
             auto_spin:      false,
             spin_speed:     0.25,
+            stipple_canvas: stipple_canvas_initial(),
             objects:        Vec::new(),
             next_id:        0,
         }
@@ -157,7 +188,17 @@ impl Scene3D {
     /// );
     /// ```
     pub fn add(&mut self, mesh: MeshKind, transform: Mat4) -> ObjectId {
-        self.add_labeled(mesh, transform, None)
+        self.add_inner(mesh, transform, None, ObjectTexture::Gen)
+    }
+
+    /// Add a mesh using `texture` instead of the procedural compute texture.
+    pub fn add_with_texture(
+        &mut self,
+        mesh:      MeshKind,
+        transform: Mat4,
+        texture:   ObjectTexture,
+    ) -> ObjectId {
+        self.add_inner(mesh, transform, None, texture)
     }
 
     /// Add a named mesh primitive.  The label appears in the inspector panel.
@@ -167,18 +208,30 @@ impl Scene3D {
         mesh:  MeshKind,
         transform: Mat4,
     ) -> ObjectId {
-        self.add_labeled(mesh, transform, Some(label.into()))
+        self.add_inner(mesh, transform, Some(label.into()), ObjectTexture::Gen)
     }
 
-    fn add_labeled(
+    /// Like [`add_named`](Self::add_named) with an explicit [`ObjectTexture`].
+    pub fn add_named_with_texture(
+        &mut self,
+        label:     impl Into<String>,
+        mesh:      MeshKind,
+        transform: Mat4,
+        texture:   ObjectTexture,
+    ) -> ObjectId {
+        self.add_inner(mesh, transform, Some(label.into()), texture)
+    }
+
+    fn add_inner(
         &mut self,
         mesh:      MeshKind,
         transform: Mat4,
         label:     Option<String>,
+        texture:   ObjectTexture,
     ) -> ObjectId {
         let id = ObjectId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
-        self.objects.push(Object3D { id, label, mesh, transform, visible: true });
+        self.objects.push(Object3D { id, label, mesh, transform, visible: true, texture });
         id
     }
 

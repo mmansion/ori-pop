@@ -3,7 +3,7 @@
 //! - **Blue handles:** cubic Bézier control points (spatial shape).
 //! - **Coral markers:** slide along the curve; they set `t1` and `t2` on [`DensityProfile`], shifting
 //!   how the four knot multipliers `y0`…`y3` are distributed from curve start to end.
-//! - **C** toggles overlay.
+//! - **Space** toggles overlay.
 //!
 //! Event-driven redraw; light preview while dragging, full stipple after release.
 
@@ -32,7 +32,7 @@ struct EditorState {
     density: DensityProfile,
     show_overlay: bool,
     drag: Drag,
-    prev_c_held: bool,
+    prev_space_held: bool,
     path_falloff: f32,
 
     cached_dots: Vec<Dot>,
@@ -66,7 +66,7 @@ impl Default for EditorState {
             density: DensityProfile::default(),
             show_overlay: true,
             drag: Drag::None,
-            prev_c_held: false,
+            prev_space_held: false,
             path_falloff: 110.0,
             cached_dots: Vec::new(),
             cache_valid: false,
@@ -81,7 +81,7 @@ impl Default for EditorState {
 
 fn main() {
     eprintln!(
-        "curves-demo — blue: Bézier handles; coral: slide density timing on curve; C: overlay."
+        "curves-demo — blue: Bezier handles; coral: slide density timing on curve; Space: overlay."
     );
     size(W as u32, H as u32);
     title("curve-controlled density");
@@ -293,11 +293,11 @@ fn draw() {
     EDITOR.with(|cell| {
         let mut s = cell.borrow_mut();
 
-        let c_held = key_pressed() && key() == 'c';
-        if c_held && !s.prev_c_held {
+        let space_held = key_pressed() && key() == ' ';
+        if space_held && !s.prev_space_held {
             s.show_overlay = !s.show_overlay;
         }
-        s.prev_c_held = c_held;
+        s.prev_space_held = space_held;
 
         let mx = mouse_x();
         let my = mouse_y();
