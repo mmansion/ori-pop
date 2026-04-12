@@ -4,6 +4,8 @@ MANSION's personal art-making toolset and hyper-minimal creative-coding workspac
 
 **[Read the Guide](https://mmansion.github.io/ori-pop/)**
 
+For workspace layout, crate boundaries, and commands for contributors and coding agents, see [`AGENTS.md`](AGENTS.md).
+
 ## Quick Start
 
 ```bash
