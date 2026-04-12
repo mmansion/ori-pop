@@ -4,9 +4,41 @@ This document captures the intended long-term direction of the ori-pop framework
 It is a living record of architectural decisions made early so that patterns stay
 consistent as the codebase grows.
 
-The guiding ambition: a GPU-first creative-coding and generative-design framework
-that serves both art-making and real fabrication — robotic, CNC, and 3D-printed
-output from the same generative models used to produce visuals.
+The guiding ambition: a **GPU-first, engine-first** creative-coding and
+generative-design platform — one host runtime (window, passes, cameras), with
+**two-dimensional work as a *view mode*** (orthographic camera, window-aligned
+canvas) exactly like engine-native 2D in Unity — that serves both art-making and
+real fabrication: robotic, CNC, and 3D-printed output from the same generative
+models used to produce visuals.
+
+---
+
+## 0. Engine Host, `oripop-core`, and 2D as a Mode
+
+**Status: in progress (conceptual alignment; implementation evolving)**
+
+**Product shape:** Ori Pop is **not** modeled as a separate “2D app” beside a “3D
+app.” Sketches and future editor tooling target **one engine window** and **one
+frame graph** (`oripop-3d`). “Processing-like” sketches are **orthographic views**
+of scene content (often a plane or overlay) where the **canvas maps cleanly to
+the window**, not a second platform abstraction.
+
+**Kernel to grow first — `oripop-core`:** Treat **`oripop-core` as the creative
+engine kernel** — canvas contracts, scalar fields, stipple distribution, and the
+Processing-style drawing API. This is the **first runtime foundation** to harden:
+everything else (surface binding, fabrication, agents) **consumes** patterns and
+parameters authored here or serializes them through the `DesignTree` in
+`oripop-math`.
+
+**Mathematical substrate — `oripop-math`:** Remains the **GPU-free mathematical
+kernel** — `Surface`, `DesignTree`, `CpuMesh`, frames — serializable and
+headlessly testable. It is **not** the sketch API; it is the **geometry and design
+object** layer the engine and agents share.
+
+**Relationship:** `oripop-3d` depends on **both** `oripop-math` and `oripop-core`.
+Sketches (`sketches` crate) depend on **both** as well. Long term, a dedicated
+**Ori Pop editor** binary would sit alongside `sketches`, reuse the same crates,
+and encapsulate project UI, inspectors, and coding tools inside the host.
 
 ---
 
@@ -18,14 +50,9 @@ Adopt the CAD / robotics / 3D-printing standard: Z is up, XY is the build plane,
 right-handed orientation (ISO 80000-2, ROS, STEP, STL, Rhino, Grasshopper,
 FreeCAD).
 
-The current codebase uses Y-up (OpenGL / glam default). Switching early, before
-sketches accumulate, is far cheaper than retrofitting later.
-
-Changes required:
-- `Camera::default()` — `up: Vec3::Z`, eye position moved to `(5, -5, 3)`.
-- Mesh generators (`uv_sphere`, `cube`, `plane`) regenerated with Z as vertical.
-- Default `light_dir` updated to Z-up space.
-- `Scene3D` documentation updated throughout.
+The workspace has **completed** the migration away from Y-up defaults: cameras,
+mesh primitives, lighting, and documentation assume **Z-up right-handed** space
+(see `oripop-math` / `oripop-3d` module docs and scene conventions).
 
 ---
 
@@ -45,8 +72,12 @@ All values are editable with drag inputs and sliders in real time.
 **Status: in progress**
 
 A new crate with **no GPU dependency** (`wgpu`, `winit` not in `Cargo.toml`).
-Every other crate — physics, geometry, evolutionary, fabrication — depends on this
-crate for shared types. Because it carries no GPU weight, it can be tested
+Every **planned** downstream geometry crate — physics, geo, evolution, fabrication
+— depends on this crate for shared types. **`oripop-3d`** already depends on it.
+**`oripop-core`** remains the creative engine kernel and does **not** yet list
+`oripop-math` as a dependency; sketches today combine **core + 3d**, and
+`DesignTree` wiring will tighten the link between canvas fields and `Surface`
+data over time. Because `oripop-math` carries no GPU weight, it can be tested
 headlessly on any machine, including CI.
 
 ### The Design Tree
@@ -131,9 +162,12 @@ geometry.
 
 ### Levels of Alignment
 
-**Level 1 — UV sampling (current state).** The compute shader generates a flat 2D
-image without knowledge of the 3D shape. The mesh samples it by UV. Works for
-abstract patterns; distortion follows from the UV layout.
+**Level 1 — UV sampling (current state).** The compute shader (or CPU stipple
+raster) produces a **flat 2D image** in parameter space; the mesh samples it by
+UV inside the **same engine frame** as any 3D content. Works for abstract
+patterns; distortion follows from the UV layout. This is consistent with
+**2D-as-a-mode**: the pattern is authored in `(u, v)` / canvas space, then **read
+through** surface UVs in the 3D pass.
 
 **Level 2 — Surface-parameterized generation.** The compute shader receives
 surface-specific uniforms: profile curve, principal curvatures, arc length
@@ -323,16 +357,28 @@ Depends on: `oripop-math`, `oripop-geo`.
 
 ## Dependency Graph
 
+**Current workspace (crates that exist today):**
+
+```
+oripop-math        — GPU-free math / DesignTree / Surface / CpuMesh
+oripop-core        — creative engine kernel: canvas, fields, stipples, 2D API
+oripop-3d          — depends on oripop-math + oripop-core (window, wgpu, scene)
+sketches           — depends on oripop-core + oripop-3d (binaries / experiments)
+```
+
+**Planned expansion (from items elsewhere in this roadmap):**
+
 ```
 oripop-math   (no GPU — pure Rust geometry)
     ├── oripop-geo      (computational geometry, some GPU compute)
     │       ├── oripop-evo   (genetic optimization)
     │       └── oripop-fab   (fabrication output)
     ├── oripop-physics  (simulation)
-    └── oripop-3d       (rendering / visualization)
-            └── oripop-core  (2D drawing API)
+    └── oripop-3d       (rendering / visualization; already depends on core + math)
 ```
 
-`oripop-core` remains standalone. `oripop-3d` depends on both `oripop-core`
-and `oripop-math`. All higher-level crates depend on `oripop-math` but not
-necessarily on each other.
+`oripop-core` is the **authoring-facing engine kernel**; `oripop-math` is the
+**geometry / design-object kernel**. `oripop-3d` pulls both into the GPU host.
+Future editor and fabrication crates depend on `oripop-math` and may depend on
+`oripop-core` and `oripop-3d` as needed; they do not all need to depend on each
+other.

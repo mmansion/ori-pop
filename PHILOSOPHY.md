@@ -18,6 +18,46 @@ personal, and shaped by a specific way of seeing.
 
 ---
 
+## Engine-First — Two Dimensions as a Mode
+
+ORI-POP is conceived **first as a real-time engine**, not as a split between a
+“2D application” and a “3D application.” Think **Unity**, not Processing-plus-a-separate-viewer:
+there is **one host process**, **one render loop**, and **one camera stack**.
+
+**Flat / sketch work is a *mode* of that engine**, not a second runtime:
+
+- An **orthographic camera** (often axis-aligned) looks at content that lives in
+  the same Z-up world space as any other scene.
+- A **canvas** can be sized and placed so that its image plane **matches the
+  window** in pixel space — so the experience reads like a classic single-file
+  sketch, even though it is still **geometry + transforms + passes** under the hood.
+- **Drawing APIs** (`line`, `ellipse`, fields, stipples) are **authoring
+  primitives** that feed textures, buffers, or overlays inside that same frame
+  graph — not a competing windowing model.
+
+Long term, **editing and coding tooling live inside this host** (inspector panels
+grow into timelines, browsers, embedded editors, graph views). The executable
+is the **studio shell** around the engine; sketches remain the expressive unit,
+whether they are lean `main` programs today or first-class documents loaded by
+an Ori Pop editor tomorrow.
+
+**Crate roles in this picture:**
+
+- **`oripop-math`** — the **portable mathematical kernel**: `DesignTree`,
+  `Surface`, meshes, frames — GPU-free, serializable, fabrication-facing.
+- **`oripop-core`** — the **creative engine kernel** you grow first: the canvas,
+  scalar fields, stipple distribution, and Processing-style 2D API. This is the
+  **runtime-facing foundation** for how patterns and drawings are authored before
+  (and after) they bind to surfaces and fabrication.
+- **`oripop-3d`** — windowing, `wgpu`, scene graph, passes, and the bridge from
+  CPU-authored content to the GPU.
+
+“2D” does not mean “off to the side of the 3D world.” It means **the same world,
+same pipeline, constrained presentation** — exactly how engine-native 2D works
+in modern game engines.
+
+---
+
 ## The Central Idea
 
 **Surface and pattern share a coordinate system.**
@@ -64,9 +104,11 @@ of the same upstream computation.
 Heavy computation (external libraries)
 truck / parry / rapier / nalgebra
   ↓
-oripop-math          — thin integration types: Surface, UVMap, Frame, Mesh
+oripop-math          — portable math kernel: DesignTree, Surface, Frame, CpuMesh
   ↓
-oripop-3d            — GPU generative pipeline, real-time render, egui inspector
+oripop-core          — creative engine kernel: canvas, fields, stipples, 2D API
+  ↓
+oripop-3d            — host window, wgpu passes, scene, real-time render, egui
   ↓
 oripop-fab           — fabrication bridge: toolpath / strips / STL / G-code
   ↓
@@ -75,13 +117,15 @@ oripop-evo           — genetic / evolutionary optimization of design parameter
 Agentic layer        — AI models that read, modify, and evaluate the graph
 ```
 
-**ORI-POP does not reimplement the geometry kernel.** It wraps proven Rust
-libraries (truck for NURBS/B-rep, rapier for physics, nalgebra for math) and
-provides a creative coding interface on top of them.
+**ORI-POP does not reimplement the heavy geometry kernel.** It wraps proven Rust
+libraries (truck for NURBS/B-rep, rapier for physics, nalgebra for math) where
+those integrations land, and concentrates **original work** in the math tree,
+the **creative engine** (`oripop-core`), the **GPU host** (`oripop-3d`), and the
+agentic / fabrication layers above.
 
-What ORI-POP owns is the **creative and agentic interface** — the expressive
-layer where generative logic is authored, previewed, and connected to physical
-output.
+What ORI-POP owns is the **engine and creative interface** — the expressive layer
+where generative logic is authored **inside the runtime**, previewed through the
+same camera and passes that will later drive fabrication and agents.
 
 ---
 
@@ -228,7 +272,9 @@ interoperability today with excellent tooling.
 
 ## What It Is Not
 
-- Not a game engine (though it borrows real-time rendering from one)
+- Not a general-purpose **consumer game engine** for shipping arbitrary titles
+  (no full editor suite, asset store, or platform export matrix — though the
+  **architecture is engine-first**, like Unity: one host, one loop, 2D as a mode)
 - Not a general-purpose 3D modeler
 - Not a replacement for Rhino, Blender, or Houdini
 - Not a framework for other people's aesthetics
@@ -248,4 +294,4 @@ a system that makes the specific things you want to make feel inevitable.
 
 ---
 
-*Last updated: 2026-03-28*
+*Last updated: 2026-04-12*
