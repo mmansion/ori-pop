@@ -24,5 +24,5 @@ cargo run -p sketches --bin hello-ori-pop
 ## Generate API docs
 
 ```bash
-cargo doc --no-deps -p oripop-core --open
+cargo doc --no-deps -p oripop-canvas --open
 ```

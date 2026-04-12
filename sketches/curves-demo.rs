@@ -9,8 +9,8 @@
 
 use std::cell::RefCell;
 
-use oripop_core::prelude::*;
-use oripop_core::{generate_dots, Bezier, DensityProfile, Dot, Force, Params, Point};
+use oripop_canvas::prelude::*;
+use oripop_canvas::{generate_dots, Bezier, DensityProfile, Dot, Force, Params, Point};
 
 const W: f32 = 880.0;
 const H: f32 = 880.0;

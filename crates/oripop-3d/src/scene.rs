@@ -89,7 +89,7 @@ pub struct Object3D {
 ///     scene.clear();
 ///     scene.add(MeshKind::Sphere, Mat4::IDENTITY);
 ///
-///     // 2D overlay via oripop-core API
+///     // 2D overlay via oripop-canvas API
 ///     stroke(200, 200, 255);
 ///     line(10.0, 10.0, 400.0, 10.0);
 /// }

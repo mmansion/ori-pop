@@ -1297,7 +1297,7 @@ dependencies = [
  "glam",
  "image",
  "log",
- "oripop-core",
+ "oripop-canvas",
  "oripop-math",
  "pollster",
  "raw-window-handle",
@@ -1306,7 +1306,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "oripop-core"
+name = "oripop-canvas"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
@@ -1745,7 +1745,7 @@ name = "sketches"
 version = "0.1.0"
 dependencies = [
  "oripop-3d",
- "oripop-core",
+ "oripop-canvas",
  "rand",
 ]
 

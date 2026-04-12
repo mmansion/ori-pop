@@ -1,5 +1,5 @@
-use oripop_core::prelude::*;
-use oripop_core::{generate_dots, Force, Line, Params, Point};
+use oripop_canvas::prelude::*;
+use oripop_canvas::{generate_dots, Force, Line, Params, Point};
 
 fn main() {
     size(800, 800);

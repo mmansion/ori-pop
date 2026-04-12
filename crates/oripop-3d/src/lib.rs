@@ -1,6 +1,6 @@
 //! # oripop-3d
 //!
-//! A 3D rendering layer for ori-pop, built on top of `oripop-core`.
+//! A 3D rendering layer for ori-pop, built on top of `oripop-canvas`.
 //!
 //! ## Coordinate convention
 //!
@@ -14,7 +14,7 @@
 //! - Generative textures computed entirely on the GPU (domain-warped FBM,
 //!   animated with time).
 //! - 3D render pass with depth testing, Lambertian lighting, and rim shading.
-//! - Seamless 2D overlay: any `oripop-core` drawing call inside the draw
+//! - Seamless 2D overlay: any `oripop-canvas` drawing call inside the draw
 //!   callback is composited on top of the 3D scene in the same frame.
 //! - Live **egui inspector panel** — shows camera, light, texture-gen params,
 //!   and scene objects. Toggle visibility with the **Space** key.
@@ -240,7 +240,7 @@ impl ApplicationHandler for Runner3D {
         );
 
         let phys = window.inner_size();
-        let (w, h, _, _) = oripop_core::draw::settings();
+        let (w, h, _, _) = oripop_canvas::draw::settings();
 
         let renderer = pollster::block_on(renderer::Renderer::init(
             Arc::clone(&window),
@@ -297,7 +297,7 @@ impl ApplicationHandler for Runner3D {
                 )
             {
                 self.scene.show_inspector = !self.scene.show_inspector;
-                if !oripop_core::draw::continuous_redraw_enabled() {
+                if !oripop_canvas::draw::continuous_redraw_enabled() {
                     if let Some(w) = &self.window {
                         w.request_redraw();
                     }
@@ -335,7 +335,7 @@ impl ApplicationHandler for Runner3D {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::CursorEntered { .. } => {
-                if !oripop_core::draw::continuous_redraw_enabled() {
+                if !oripop_canvas::draw::continuous_redraw_enabled() {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
@@ -372,7 +372,7 @@ impl ApplicationHandler for Runner3D {
                 }
 
                 // ── Run draw callback ──────────────────────────────────────
-                oripop_core::draw::begin_frame();
+                oripop_canvas::draw::begin_frame();
                 (self.draw_fn)(&mut self.scene);
 
                 // ── Apply orbit camera override ────────────────────────────
@@ -392,7 +392,7 @@ impl ApplicationHandler for Runner3D {
                     self.scene.camera.target = self.orbit_target;
                 }
 
-                let (bg, vertices_2d) = oripop_core::draw::take_2d_vertices();
+                let (bg, vertices_2d) = oripop_canvas::draw::take_2d_vertices();
 
                 // ── Build egui frame ───────────────────────────────────────
                 let egui_output = if let Some(egui_winit) = self.egui_winit.as_mut() {
@@ -473,7 +473,7 @@ impl ApplicationHandler for Runner3D {
                     .unwrap_or(1.0);
                 let x   = position.x as f32 / sf;
                 let y   = position.y as f32 / sf;
-                oripop_core::draw::set_mouse_pos(x, y);
+                oripop_canvas::draw::set_mouse_pos(x, y);
 
                 if self.scene.orbit_enabled {
                     let dx = x - self.cur_x;
@@ -492,7 +492,7 @@ impl ApplicationHandler for Runner3D {
                 }
                 self.cur_x = x;
                 self.cur_y = y;
-                if !oripop_core::draw::continuous_redraw_enabled() {
+                if !oripop_canvas::draw::continuous_redraw_enabled() {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
@@ -503,7 +503,7 @@ impl ApplicationHandler for Runner3D {
                 let pressed = state == ElementState::Pressed;
                 match button {
                     winit::event::MouseButton::Left => {
-                        oripop_core::draw::set_mouse_pressed(pressed);
+                        oripop_canvas::draw::set_mouse_pressed(pressed);
                     }
                     winit::event::MouseButton::Right => {
                         self.orbit_rdown = pressed;
@@ -521,7 +521,7 @@ impl ApplicationHandler for Runner3D {
                     }
                     _ => {}
                 }
-                if !oripop_core::draw::continuous_redraw_enabled() {
+                if !oripop_canvas::draw::continuous_redraw_enabled() {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
@@ -530,7 +530,7 @@ impl ApplicationHandler for Runner3D {
 
             WindowEvent::MouseWheel { .. } => {
                 // Zoom is applied before egui (see above) so it still runs when egui consumes the wheel.
-                if !oripop_core::draw::continuous_redraw_enabled() {
+                if !oripop_canvas::draw::continuous_redraw_enabled() {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
@@ -560,8 +560,8 @@ impl ApplicationHandler for Runner3D {
                 } else {
                     '\0'
                 };
-                oripop_core::draw::set_key(pressed, code);
-                if !oripop_core::draw::continuous_redraw_enabled() {
+                oripop_canvas::draw::set_key(pressed, code);
+                if !oripop_canvas::draw::continuous_redraw_enabled() {
                     if let Some(w) = self.window.as_ref() {
                         w.request_redraw();
                     }
@@ -574,7 +574,7 @@ impl ApplicationHandler for Runner3D {
 
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         if let Some(window) = &self.window {
-            if oripop_core::draw::continuous_redraw_enabled() {
+            if oripop_canvas::draw::continuous_redraw_enabled() {
                 window.request_redraw();
             }
         }
@@ -586,11 +586,11 @@ impl ApplicationHandler for Runner3D {
 /// Open a window and start the combined 2D + 3D draw loop.
 ///
 /// Configure the window with [`size`], [`title`], and [`smooth`] from
-/// `oripop_core` **before** calling `run3d`.
+/// `oripop_canvas` **before** calling `run3d`.
 ///
 /// The `draw_fn` callback is called once per frame.  Inside it you can:
 /// - Mutate [`Scene3D`] (camera, objects, texture-gen params).
-/// - Call any `oripop_core` 2D drawing function; those shapes will be
+/// - Call any `oripop_canvas` 2D drawing function; those shapes will be
 ///   rendered as a depth-free overlay on top of the 3D scene.
 ///
 /// Press **Space** to toggle the live inspector panel.
@@ -609,7 +609,7 @@ pub fn run3d(draw_fn: fn(&mut Scene3D)) {
         SetProcessDpiAwarenessContext(-2);
     }
 
-    let (width, height, win_title, msaa) = oripop_core::draw::settings();
+    let (width, height, win_title, msaa) = oripop_canvas::draw::settings();
 
     let window_attrs = Window::default_attributes()
         .with_title(win_title)
@@ -630,9 +630,9 @@ pub fn run3d(draw_fn: fn(&mut Scene3D)) {
 /// use oripop_3d::prelude::*;
 /// ```
 ///
-/// Includes the full `oripop_core` 2D drawing API plus all 3D types.
+/// Includes the full `oripop_canvas` 2D drawing API plus all 3D types.
     pub mod prelude {
-    pub use oripop_core::prelude::*;
+    pub use oripop_canvas::prelude::*;
     pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
     pub use crate::{
         run3d,

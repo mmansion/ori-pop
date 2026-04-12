@@ -1,7 +1,7 @@
 //! wgpu renderer that drives three GPU passes per frame:
 //!   1. Compute pass    — generative texture (domain-warped FBM, GPU only)
 //!   2. 3D render pass  — meshes with depth, MVP transform, texture sampling
-//!   3. 2D overlay pass — alpha-blended 2D vertices from oripop-core + MSAA resolve
+//!   3. 2D overlay pass — alpha-blended 2D vertices from oripop-canvas + MSAA resolve
 //!
 //! A fourth egui pass is driven externally by `lib.rs` via `render_egui()`,
 //! keeping the egui renderer separate from the core pipeline.
@@ -118,7 +118,7 @@ pub(crate) struct Renderer {
     // Pre-built mesh primitives
     meshes: [GpuMesh; 3], // indexed by MeshKind
 
-    // 2D overlay pipeline (reuses oripop-core's WGSL shader)
+    // 2D overlay pipeline (reuses oripop-canvas's WGSL shader)
     pipeline_2d:    wgpu::RenderPipeline,
     uniform_2d_buf: wgpu::Buffer,
     uniform_2d_bg:  wgpu::BindGroup,
@@ -498,7 +498,7 @@ impl Renderer {
 
         let shader_2d = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("2d overlay shader"),
-            source: wgpu::ShaderSource::Wgsl(oripop_core::draw::SHADER_2D_WGSL.into()),
+            source: wgpu::ShaderSource::Wgsl(oripop_canvas::draw::SHADER_2D_WGSL.into()),
         });
 
         let uniform_2d_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -545,7 +545,7 @@ impl Renderer {
             vertex: wgpu::VertexState {
                 module:              &shader_2d,
                 entry_point:         Some("vs_main"),
-                buffers:             &[oripop_core::draw::vertex_2d_buffer_layout()],
+                buffers:             &[oripop_canvas::draw::vertex_2d_buffer_layout()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {

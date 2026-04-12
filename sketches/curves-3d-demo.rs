@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 
 use oripop_3d::prelude::*;
-use oripop_core::{generate_dots, Bezier, DensityProfile, Dot, Force, Params, Point};
+use oripop_canvas::{generate_dots, Bezier, DensityProfile, Dot, Force, Params, Point};
 
 /// Bézier `(x,y)` in \([0,1]^2\) (top-left origin) ↔ unit plane local \([-0.5,0.5]^2\) at \(Z=0\),
 /// matching stipple UV upload (`v = 1 - y`).
@@ -20,7 +20,7 @@ fn bezier_to_plane_local(b: &Point) -> Vec3 {
 }
 
 /// Project a plane-local point through `mvp` into logical pixel coords (same convention as
-/// [`oripop_core`] / `shader.wgsl`).
+/// [`oripop_canvas`] / `shader.wgsl`).
 fn project_plane_local_to_screen(mvp: Mat4, w: f32, h: f32, local: Vec3) -> Option<Vec2> {
     let clip = mvp * local.extend(1.0);
     if clip.w.abs() < 1e-8 {

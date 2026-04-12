@@ -45,7 +45,7 @@ an Ori Pop editor tomorrow.
 
 - **`oripop-math`** — the **portable mathematical kernel**: `DesignTree`,
   `Surface`, meshes, frames — GPU-free, serializable, fabrication-facing.
-- **`oripop-core`** — the **creative engine kernel** you grow first: the canvas,
+- **`oripop-canvas`** — the **creative engine kernel** you grow first: the canvas,
   scalar fields, stipple distribution, and Processing-style 2D API. This is the
   **runtime-facing foundation** for how patterns and drawings are authored before
   (and after) they bind to surfaces and fabrication.
@@ -106,7 +106,7 @@ truck / parry / rapier / nalgebra
   ↓
 oripop-math          — portable math kernel: DesignTree, Surface, Frame, CpuMesh
   ↓
-oripop-core          — creative engine kernel: canvas, fields, stipples, 2D API
+oripop-canvas          — creative engine kernel: canvas, fields, stipples, 2D API
   ↓
 oripop-3d            — host window, wgpu passes, scene, real-time render, egui
   ↓
@@ -120,7 +120,7 @@ Agentic layer        — AI models that read, modify, and evaluate the graph
 **ORI-POP does not reimplement the heavy geometry kernel.** It wraps proven Rust
 libraries (truck for NURBS/B-rep, rapier for physics, nalgebra for math) where
 those integrations land, and concentrates **original work** in the math tree,
-the **creative engine** (`oripop-core`), the **GPU host** (`oripop-3d`), and the
+the **creative engine** (`oripop-canvas`), the **GPU host** (`oripop-3d`), and the
 agentic / fabrication layers above.
 
 What ORI-POP owns is the **engine and creative interface** — the expressive layer
@@ -177,7 +177,7 @@ The field is computed on the GPU as a WGSL compute shader. Built-in generators:
 - **Domain-warped FBM** — layered noise with swirling warp, animated
 - **Reaction-diffusion** — Gray-Scott, Turing patterns, biological surface logic
 - **Voronoi / distance fields** — cell structure, edges, gradients
-- **Force fields** — attractors, gradients, compression zones (from oripop-core)
+- **Force fields** — attractors, gradients, compression zones (from oripop-canvas)
 - **Custom WGSL** — the user writes the shader directly
 
 Surface-aware generation means the compute shader receives surface-specific

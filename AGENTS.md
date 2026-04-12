@@ -17,9 +17,9 @@ Published guide: https://mmansion.github.io/ori-pop/
 | Path | Crate / role |
 |------|----------------|
 | `crates/oripop-math` | Shared math and design-tree types. **Must stay free of GPU and windowing** (`wgpu`, `winit`, `egui` do not belong here). Uses `glam`, `serde`, `serde_json`, `ron`. Intended to remain headless and easy to test. |
-| `crates/oripop-core` | Core engine-facing types and logic (includes `wgpu` / `winit` and related deps). |
-| `crates/oripop-3d` | Real-time 3D: `wgpu`, `egui`, windowing, scene and camera. Depends on `oripop-core` and `oripop-math`. |
-| `sketches/` | Binary demos and experiments. Depends on `oripop-core` and `oripop-3d`. Appropriate place for one-off exploration. |
+| `crates/oripop-canvas` | Creative engine kernel: Processing-style 2D drawing API, scalar fields, stipples (includes `wgpu` / `winit` for the sketch API). |
+| `crates/oripop-3d` | Real-time 3D: `wgpu`, `egui`, windowing, scene and camera. Depends on `oripop-canvas` and `oripop-math`. |
+| `sketches/` | Binary demos and experiments. Depends on `oripop-canvas` and `oripop-3d`. Appropriate place for one-off exploration. |
 | `guide/` | mdBook source for the ORI-POP Guide. |
 | `presets/` | JSON presets (for example `presets/default.json`). |
 
@@ -45,7 +45,7 @@ Build the whole workspace:
 cargo build --workspace
 ```
 
-Run unit tests (present under `oripop-math` and `oripop-core`):
+Run unit tests (present under `oripop-math` and `oripop-canvas`):
 
 ```bash
 cargo test --workspace

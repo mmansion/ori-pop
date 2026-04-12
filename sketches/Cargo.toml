@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-oripop-core = { path = "../crates/oripop-core" }
+oripop-canvas = { path = "../crates/oripop-canvas" }
 oripop-3d   = { path = "../crates/oripop-3d" }
 rand.workspace = true
 

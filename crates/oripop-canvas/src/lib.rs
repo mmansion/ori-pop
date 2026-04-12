@@ -1,4 +1,4 @@
-//! # oripop-core
+//! # oripop-canvas
 //!
 //! The 2D drawing API and generative field engine for ori-pop.
 //!

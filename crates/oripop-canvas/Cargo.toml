@@ -1,5 +1,5 @@
 [package]
-name = "oripop-core"
+name = "oripop-canvas"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

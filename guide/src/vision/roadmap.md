@@ -149,9 +149,9 @@ oripop-math       no GPU — pure Rust geometry kernel
     │       └── oripop-fab    fabrication output
     ├── oripop-physics    simulation
     └── oripop-3d         rendering and visualization
-            └── oripop-core   2D drawing API
+            └── oripop-canvas   2D drawing API
 ```
 
-`oripop-core` remains standalone. `oripop-3d` depends on both `oripop-core` and
-`oripop-math`. Higher-level crates depend on `oripop-math` but not necessarily
-on each other.
+`oripop-3d` depends on both `oripop-canvas` and `oripop-math`. `oripop-canvas` does
+not depend on `oripop-math` yet. Higher-level crates depend on `oripop-math` but
+not necessarily on each other.

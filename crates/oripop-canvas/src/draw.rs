@@ -12,7 +12,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use oripop_core::prelude::*;
+//! use oripop_canvas::prelude::*;
 //!
 //! fn main() {
 //!     size(800, 600);
@@ -837,7 +837,7 @@ impl log::Log for Logger {
 //
 // These functions are intentionally NOT re-exported from `prelude`.
 // They exist so that oripop-3d's combined runner can share the same
-// thread-local drawing state as oripop-core's 2D API.
+// thread-local drawing state as oripop-canvas's 2D API.
 
 /// The WGSL source of the 2D drawing shader.
 /// oripop-3d embeds this to create a compatible 2D overlay pipeline.

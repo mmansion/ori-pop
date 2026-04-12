@@ -1,4 +1,4 @@
-use oripop_core::prelude::*;
+use oripop_canvas::prelude::*;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use std::sync::atomic::{AtomicU64, Ordering};
 

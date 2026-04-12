@@ -1,7 +1,7 @@
 [workspace]
 members = [
   "crates/oripop-math",
-  "crates/oripop-core",
+    "crates/oripop-canvas",
   "crates/oripop-3d",
   "sketches",
 ]

@@ -8,7 +8,7 @@ Every sketch is a standalone Rust binary with two parts:
 2. **`draw()`** — called every frame.
 
 ```rust
-use oripop_core::prelude::*;
+use oripop_canvas::prelude::*;
 
 fn main() {
     size(800, 600);

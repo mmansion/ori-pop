@@ -2,7 +2,7 @@
 //!
 //! A UV sphere and a ground plane are rendered with a GPU-generated texture
 //! (domain-warped FBM noise, animated in real time).  A lightweight 2D
-//! overlay — drawn with the normal oripop-core API — is composited on top.
+//! overlay — drawn with the normal oripop-canvas API — is composited on top.
 //!
 //! Coordinate convention: Z-up right-handed.
 //!   X = right, Y = depth/forward, Z = up, XY = ground plane.
