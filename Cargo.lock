@@ -1332,6 +1332,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "oripop-runtime"
+version = "0.1.0"
+dependencies = [
+ "oripop-3d",
+]
+
+[[package]]
+name = "oripop-studio"
+version = "0.1.0"
+dependencies = [
+ "oripop-runtime",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

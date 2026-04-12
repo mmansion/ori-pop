@@ -37,9 +37,44 @@ object** layer the engine and agents share.
 
 **Relationship:** `oripop-3d` depends on **both** `oripop-math` and `oripop-canvas`.
 The `sketches` crate depends on **`oripop-canvas` and `oripop-3d`** (and therefore
-transitively on `oripop-math`). Long term, a dedicated
-**Ori Pop editor** binary would sit alongside `sketches`, reuse the same crates,
-and encapsulate project UI, inspectors, and coding tools inside the host.
+transitively on `oripop-math`). **`oripop-runtime`** is a thin facade over
+`oripop-3d` today (shared **Play / player** API boundary). **`oripop-studio`** is
+the future **control-surface** binary; it depends on **`oripop-runtime`** so the
+dependency direction stays *studio → runtime → GPU host*, not the reverse.
+
+---
+
+## 0a. Studio, Runtime, and Standalone Player
+
+**Status: started (scaffolding only)**
+
+### Goals
+
+- **Studio (`oripop-studio`)** — configuration, inspectors, project chrome, **Play**
+  orchestration. Not the home for inner-loop GPU optimizations; no ownership of
+  pass implementations long term.
+- **Runtime (`oripop-runtime`)** — shared **playback** API used by studio **Play**,
+  **sketches**, and **shipped player** binaries. Hot path and frame scheduling
+  **migrate here** from `oripop-3d` as seams stabilize.
+- **`oripop-3d`** — concrete `wgpu` / `winit` host and passes **today**; becomes
+  an implementation detail behind `oripop-runtime` (and may later split further,
+  e.g. `oripop-render`).
+
+### Phasing (in-process first)
+
+1. **Done:** `oripop-runtime` re-exports `run3d` + prelude; `oripop-studio` stub binary
+   links `oripop-runtime`. `sketches` may keep using `oripop-3d` directly until
+   migrated.
+2. **Next:** Sketches and templates depend on **`oripop-runtime`** only; `oripop-3d`
+   is not a direct dependency of sketch code.
+3. **Then:** Move loop / timing / input dispatch from `oripop-3d` into
+   `oripop-runtime`; `oripop-3d` shrinks toward **render + surface** only.
+4. **Later:** Studio gains egui shell; **Play** runs the same runtime path as
+   standalone **player** builds (optional `cfg` to strip editor-only work from
+   player binaries).
+
+Standalone **export** (image / video) reuses the same runtime stack with a
+different outer driver (fixed timestep, encode), not a second engine.
 
 ---
 
@@ -363,9 +398,11 @@ Depends on: `oripop-math`, `oripop-geo`.
 
 ```
 oripop-math        — GPU-free math / DesignTree / Surface / CpuMesh
-oripop-canvas        — creative engine kernel: canvas, fields, stipples, 2D API
+oripop-canvas      — creative engine kernel: canvas, fields, stipples, 2D API
 oripop-3d          — depends on oripop-math + oripop-canvas (window, wgpu, scene)
-sketches           — depends on oripop-canvas + oripop-3d (binaries / experiments)
+oripop-runtime     — depends on oripop-3d (playback API facade; hot path migrates here)
+oripop-studio      — binary crate; depends on oripop-runtime (editor shell; stub)
+sketches           — depends on oripop-canvas + oripop-3d (migrate to runtime when ready)
 ```
 
 **Planned expansion (from items elsewhere in this roadmap):**

@@ -106,7 +106,7 @@ truck / parry / rapier / nalgebra
   ↓
 oripop-math          — portable math kernel: DesignTree, Surface, Frame, CpuMesh
   ↓
-oripop-canvas          — creative engine kernel: canvas, fields, stipples, 2D API
+oripop-canvas        — creative engine kernel: canvas, fields, stipples, 2D API
   ↓
 oripop-3d            — host window, wgpu passes, scene, real-time render, egui
   ↓
@@ -116,6 +116,12 @@ oripop-evo           — genetic / evolutionary optimization of design parameter
   ↓
 Agentic layer        — AI models that read, modify, and evaluate the graph
 ```
+
+**Binaries and playback boundary:** **`oripop-runtime`** is the shared API for
+sketch playback (today a thin facade over `oripop-3d`; the optimized frame loop
+moves here over time). **`oripop-studio`** is the **control-surface** process —
+configuration and editor chrome, **Play** orchestration — not the home for inner
+GPU pass code. See [`ROADMAP.md`](ROADMAP.md) §0a for phasing.
 
 **ORI-POP does not reimplement the heavy geometry kernel.** It wraps proven Rust
 libraries (truck for NURBS/B-rep, rapier for physics, nalgebra for math) where

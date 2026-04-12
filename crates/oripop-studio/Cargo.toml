@@ -1,0 +1,13 @@
+[package]
+name = "oripop-studio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ori Pop Studio — control surface and editor shell (stub until UI lands)."
+
+[[bin]]
+name = "oripop-studio"
+path = "src/main.rs"
+
+[dependencies]
+oripop-runtime = { path = "../oripop-runtime" }

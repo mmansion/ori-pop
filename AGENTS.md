@@ -19,6 +19,8 @@ Published guide: https://mmansion.github.io/ori-pop/
 | `crates/oripop-math` | Shared math and design-tree types. **Must stay free of GPU and windowing** (`wgpu`, `winit`, `egui` do not belong here). Uses `glam`, `serde`, `serde_json`, `ron`. Intended to remain headless and easy to test. |
 | `crates/oripop-canvas` | Creative engine kernel: Processing-style 2D drawing API, scalar fields, stipples (includes `wgpu` / `winit` for the sketch API). |
 | `crates/oripop-3d` | Real-time 3D: `wgpu`, `egui`, windowing, scene and camera. Depends on `oripop-canvas` and `oripop-math`. |
+| `crates/oripop-runtime` | Playback API boundary: re-exports `run3d` and prelude from `oripop-3d` today; future home of the optimized frame loop. |
+| `crates/oripop-studio` | Ori Pop Studio binary (stub): future control surface and Play shell; depends on `oripop-runtime`. |
 | `sketches/` | Binary demos and experiments. Depends on `oripop-canvas` and `oripop-3d`. Appropriate place for one-off exploration. |
 | `guide/` | mdBook source for the ORI-POP Guide. |
 | `presets/` | JSON presets (for example `presets/default.json`). |
@@ -55,6 +57,12 @@ Run a sketch (package `sketches`):
 
 ```bash
 cargo run -p sketches --bin hello-ori-pop
+```
+
+Run the studio stub (prints usage until the editor UI exists):
+
+```bash
+cargo run -p oripop-studio
 ```
 
 Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `primitives-demo`, `transform-demo`, `alpha-demo`, `forces-demo`, `interactive-demo`, `curves-demo`, `curves-3d-demo`, `textured-3d-demo`, `lsystem-3d`.

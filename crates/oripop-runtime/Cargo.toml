@@ -1,0 +1,9 @@
+[package]
+name = "oripop-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Sketch playback API — thin facade over the GPU host today; hot path migrates here over time."
+
+[dependencies]
+oripop-3d = { path = "../oripop-3d" }

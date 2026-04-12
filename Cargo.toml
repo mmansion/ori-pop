@@ -1,8 +1,10 @@
 [workspace]
 members = [
   "crates/oripop-math",
-    "crates/oripop-canvas",
+  "crates/oripop-canvas",
   "crates/oripop-3d",
+  "crates/oripop-runtime",
+  "crates/oripop-studio",
   "sketches",
 ]
 resolver = "2"
