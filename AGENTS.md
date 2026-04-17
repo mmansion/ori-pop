@@ -65,7 +65,7 @@ Run the studio stub (prints usage until the editor UI exists):
 cargo run -p oripop-studio
 ```
 
-Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `primitives-demo`, `transform-demo`, `alpha-demo`, `forces-demo`, `interactive-demo`, `curves-demo`, `curves-3d-demo`, `textured-3d-demo`, `lsystem-3d`.
+Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `primitives-demo`, `transform-demo`, `alpha-demo`, `forces-demo`, `interactive-demo`, `distribution-dial-demo`, `curves-demo`, `curves-3d-demo`, `textured-3d-demo`, `lsystem-3d`.
 
 Build the guide locally (requires [mdBook](https://rust-lang.github.io/mdBook/)):
 

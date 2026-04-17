@@ -34,6 +34,10 @@ name = "interactive-demo"
 path = "interactive-demo.rs"
 
 [[bin]]
+name = "distribution-dial-demo"
+path = "distribution-dial-demo.rs"
+
+[[bin]]
 name = "curves-demo"
 path = "curves-demo.rs"
 

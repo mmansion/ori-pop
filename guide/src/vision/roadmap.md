@@ -28,6 +28,16 @@ texture-generation parameters, and the current frame's named scene objects.
 
 ---
 
+## Sketch-first evolution
+
+The **core** stays a thin Processing-like toolkit. Richer mutators, editors, and
+distribution experiments land in **sketches** first; successful patterns are
+**promoted** into `oripop-canvas` (or future crates) with tests. See
+[`ROADMAP.md`](https://github.com/mmansion/ori-pop/blob/main/ROADMAP.md) §0b for
+the full wording.
+
+---
+
 ## `oripop-math` — Geometry Without GPU
 
 A new crate with no GPU dependency — no `wgpu`, no `winit`. It is the

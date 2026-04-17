@@ -78,6 +78,29 @@ different outer driver (fixed timestep, encode), not a second engine.
 
 ---
 
+## 0b. Sketch-First Prototypes and Core vs Higher-Level
+
+**Status: adopted (process)**
+
+The **2D surface** of ori-pop stays aligned with a **universal creative-coding
+toolkit** in the spirit of Processing and openFrameworks: a small, stable core
+(window, draw loop, immediate-style drawing API, transforms, portable geometry
+types, and a few headless-friendly engines such as scalar fields and dot
+distribution in `oripop-canvas`).
+
+**Higher-level tooling** — interactive mutators, inspectors, bespoke samplers,
+and hybrid UI plus code workflows — is expected to appear **first in sketches**
+as throwaway or iterative prototypes. Duplication and sketch-local state are
+acceptable while the interaction model and data shapes are still unknown.
+
+**Promotion** is a deliberate step: patterns that prove useful are **lifted into
+library crates** with tests and clear APIs, or isolated behind **optional
+plugin-style boundaries** when they would bloat the core or churn quickly. The
+goal is to grow the framework from validated prototypes, not to speculatively
+prefill the core with unfinished editor concepts.
+
+---
+
 ## 1. Coordinate System — Z-Up Right-Handed
 
 **Status: done**
