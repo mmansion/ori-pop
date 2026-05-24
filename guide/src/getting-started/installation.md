@@ -18,7 +18,7 @@ That's it. All dependencies are managed through `Cargo.toml`.
 ## Run a sketch
 
 ```bash
-cargo run -p sketches --bin hello-ori-pop
+cargo run -p sketches --bin 1-hello-ori-pop
 ```
 
 ## Generate API docs

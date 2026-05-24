@@ -14,7 +14,7 @@
 //!   Right-drag — orbit   |   Scroll — zoom   |   Space — inspector
 //!
 //! Run with:
-//!   cargo run --bin lsystem-3d
+//!   cargo run --bin 8-lsystem-3d
 
 use oripop_3d::prelude::*;
 use rand::{SeedableRng, Rng};

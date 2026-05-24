@@ -6,10 +6,12 @@ MANSION's personal art-making toolset and hyper-minimal creative-coding workspac
 
 For workspace layout, crate boundaries, and commands for contributors and coding agents, see [`AGENTS.md`](AGENTS.md).
 
+For the **Ori Pop Studio** texture-authoring architecture (locked plan), see [`docs/studio/README.md`](docs/studio/README.md).
+
 ## Quick Start
 
 ```bash
 git clone https://github.com/mmansion/ori-pop.git
 cd ori-pop
-cargo run -p sketches --bin hello-ori-pop
+cargo run -p sketches --bin 1-hello-ori-pop
 ```

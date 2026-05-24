@@ -9,7 +9,7 @@
 //! - **`H` key:** toggle UI handles, wireframe, and slider on/off (dots stay visible).
 //!
 //! ```bash
-//! cargo run -p sketches --bin distribution-dial-demo
+//! cargo run -p sketches --bin 11-distribution-dial-demo
 //! ```
 
 use std::sync::{Mutex, OnceLock};

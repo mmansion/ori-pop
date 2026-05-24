@@ -10,7 +10,7 @@
 //! Press Space to toggle the live inspector panel.
 //!
 //! Run with:
-//!   cargo run --bin textured-3d-demo
+//!   cargo run --bin 7-textured-3d-demo
 
 use oripop_3d::prelude::*;
 

@@ -3,11 +3,17 @@ name = "oripop-studio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Ori Pop Studio — control surface and editor shell (stub until UI lands)."
+description = "Ori Pop Studio — texture library and editor shell."
 
 [[bin]]
 name = "oripop-studio"
 path = "src/main.rs"
 
 [dependencies]
+image.workspace = true
+oripop-canvas = { path = "../oripop-canvas" }
+oripop-project = { path = "../oripop-project" }
 oripop-runtime = { path = "../oripop-runtime" }
+serde_json.workspace = true
+
+[dev-dependencies]

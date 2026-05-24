@@ -20,6 +20,7 @@ pub mod field;
 pub mod line;
 pub mod point;
 pub mod prelude;
+pub mod stipple;
 
 pub use bezier::{Bezier, DensityProfile};
 pub use field::{
@@ -28,3 +29,4 @@ pub use field::{
 };
 pub use line::Line;
 pub use point::Point;
+pub use stipple::raster_dots;

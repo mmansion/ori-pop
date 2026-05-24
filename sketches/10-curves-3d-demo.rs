@@ -5,7 +5,7 @@
 //!   they stay glued to the texture when you orbit (toggle with **H**). **Space** toggles the egui inspector.
 //! - Default framing is orthographic from +Z; with **Orbit camera** off, that view is restored each frame.
 //!
-//! Run: `cargo run -p sketches --bin curves-3d-demo`
+//! Run: `cargo run -p sketches --bin 10-curves-3d-demo`
 
 use std::cell::RefCell;
 

@@ -6,3 +6,5 @@ Thumbs.db
 nul
 guide/book/
 output/
+**/.oripop/
+**/bakes/

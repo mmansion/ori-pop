@@ -17,6 +17,7 @@ Published guide: https://mmansion.github.io/ori-pop/
 | Path | Crate / role |
 |------|----------------|
 | `crates/oripop-math` | Shared math and design-tree types. **Must stay free of GPU and windowing** (`wgpu`, `winit`, `egui` do not belong here). Uses `glam`, `serde`, `serde_json`, `ron`. Intended to remain headless and easy to test. |
+| `crates/oripop-project` | Studio project and texture-library manifest types (`DesignManifest`, atlas, bake). GPU-free; serde JSON. |
 | `crates/oripop-canvas` | Creative engine kernel: Processing-style 2D drawing API, scalar fields, stipples (includes `wgpu` / `winit` for the sketch API). |
 | `crates/oripop-3d` | Real-time 3D: `wgpu`, `egui`, windowing, scene and camera. Depends on `oripop-canvas` and `oripop-math`. |
 | `crates/oripop-runtime` | Playback API boundary: re-exports `run3d` and prelude from `oripop-3d` today; future home of the optimized frame loop. |
@@ -56,7 +57,7 @@ cargo test --workspace
 Run a sketch (package `sketches`):
 
 ```bash
-cargo run -p sketches --bin hello-ori-pop
+cargo run -p sketches --bin 1-hello-ori-pop
 ```
 
 Run the studio stub (prints usage until the editor UI exists):
@@ -65,7 +66,15 @@ Run the studio stub (prints usage until the editor UI exists):
 cargo run -p oripop-studio
 ```
 
-Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `primitives-demo`, `transform-demo`, `alpha-demo`, `forces-demo`, `interactive-demo`, `distribution-dial-demo`, `curves-demo`, `curves-3d-demo`, `textured-3d-demo`, `lsystem-3d`.
+Studio Phase 1 CLI (texture library):
+
+```bash
+cargo run -p oripop-studio -- library list
+cargo run -p oripop-studio -- bake --design coral-stipple
+cargo run -p oripop-studio -- play --design coral-stipple
+```
+
+Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `2-primitives-demo`, `3-transform-demo`, `4-alpha-demo`, `5-forces-demo`, `6-interactive-demo`, `7-textured-3d-demo`, `8-lsystem-3d`, `9-curves-demo`, `10-curves-3d-demo`, `11-distribution-dial-demo`.
 
 Build the guide locally (requires [mdBook](https://rust-lang.github.io/mdBook/)):
 
@@ -90,6 +99,7 @@ GitHub Actions currently builds and deploys the guide from [`/.github/workflows/
 | [`README.md`](README.md) | One-line pitch and quickest entry command. |
 | [`PHILOSOPHY.md`](PHILOSOPHY.md) | Intent, output spectrum, interface vision, UV-first generative ideas. |
 | [`ROADMAP.md`](ROADMAP.md) | Status of major directions and technical decisions. |
+| [`docs/studio/README.md`](docs/studio/README.md) | **Locked** Ori Pop Studio plan: texture library, projects, atlas, bake, phases. |
 | [`guide/src/`](guide/src/) | Long-form guide chapters alongside the published site. |
 
 When behavior or file paths conflict between this `AGENTS.md` and older prose, prefer **this file and the live tree** for “what exists now,” and update `AGENTS.md` when the workspace changes in a durable way.

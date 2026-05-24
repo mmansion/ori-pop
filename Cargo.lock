@@ -1332,6 +1332,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oripop-project"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oripop-runtime"
 version = "0.1.0"
 dependencies = [
@@ -1342,7 +1350,11 @@ dependencies = [
 name = "oripop-studio"
 version = "0.1.0"
 dependencies = [
+ "image",
+ "oripop-canvas",
+ "oripop-project",
  "oripop-runtime",
+ "serde_json",
 ]
 
 [[package]]

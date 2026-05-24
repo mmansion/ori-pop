@@ -16,3 +16,4 @@
 # Vision
 
 - [Roadmap](./vision/roadmap.md)
+- [Studio (texture authoring)](./vision/studio.md)

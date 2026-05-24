@@ -10,45 +10,45 @@ oripop-3d   = { path = "../crates/oripop-3d" }
 rand.workspace = true
 
 [[bin]]
-name = "hello-ori-pop"
-path = "hello-ori-pop.rs"
+name = "1-hello-ori-pop"
+path = "1-hello-ori-pop.rs"
 
 [[bin]]
-name = "primitives-demo"
-path = "primitives-demo.rs"
+name = "2-primitives-demo"
+path = "2-primitives-demo.rs"
 
 [[bin]]
-name = "transform-demo"
-path = "transform-demo.rs"
+name = "3-transform-demo"
+path = "3-transform-demo.rs"
 
 [[bin]]
-name = "alpha-demo"
-path = "alpha-demo.rs"
+name = "4-alpha-demo"
+path = "4-alpha-demo.rs"
 
 [[bin]]
-name = "forces-demo"
-path = "forces-demo.rs"
+name = "5-forces-demo"
+path = "5-forces-demo.rs"
 
 [[bin]]
-name = "interactive-demo"
-path = "interactive-demo.rs"
+name = "6-interactive-demo"
+path = "6-interactive-demo.rs"
 
 [[bin]]
-name = "distribution-dial-demo"
-path = "distribution-dial-demo.rs"
+name = "7-textured-3d-demo"
+path = "7-textured-3d-demo.rs"
 
 [[bin]]
-name = "curves-demo"
-path = "curves-demo.rs"
+name = "8-lsystem-3d"
+path = "8-lsystem-3d.rs"
 
 [[bin]]
-name = "curves-3d-demo"
-path = "curves-3d-demo.rs"
+name = "9-curves-demo"
+path = "9-curves-demo.rs"
 
 [[bin]]
-name = "textured-3d-demo"
-path = "textured-3d-demo.rs"
+name = "10-curves-3d-demo"
+path = "10-curves-3d-demo.rs"
 
 [[bin]]
-name = "lsystem-3d"
-path = "lsystem-3d.rs"
+name = "11-distribution-dial-demo"
+path = "11-distribution-dial-demo.rs"

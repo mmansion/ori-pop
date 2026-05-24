@@ -101,6 +101,43 @@ prefill the core with unfinished editor concepts.
 
 ---
 
+## 0c. Ori Pop Studio — Texture Authoring (locked plan)
+
+**Status: planned — specification locked 2026-05-24**
+
+Ori Pop Studio is the **desktop** editor for generative textures mapped onto
+surfaces (fabric print, assembly previz, fabrication). It is documented in
+[`docs/studio/`](docs/studio/README.md). That folder is the authoritative
+spec for studio architecture, workflows, on-disk formats, and implementation
+phases.
+
+### Summary
+
+| Topic | Decision |
+|-------|----------|
+| Platform | Desktop (`oripop-studio` + `oripop-runtime`); not browser-first |
+| Repo `sketches/` | Framework R&D only — not user projects |
+| User work | **Texture library** (shared) + **studio projects** (garment/production) |
+| Canvas | Provisional → primitive UV → **atlas** (v0 production default) |
+| Upstream geometry | Rhino/GH unroll authoritative at v0; import assembly + atlas |
+| Atlas | One raster, **n** panel regions; cut lines = fab + generative constraints |
+| Bake | Additive (Grasshopper-style); variants for evolving patterns |
+| Previz | Live or baked texture on imported assembly mesh via UV |
+
+### Implementation phases (studio)
+
+1. **Phase 1** — Library skeleton + provisional canvas + Play + bake
+2. **Phase 2** — Project + atlas import + assembly previz
+3. **Phase 3** — Inspector params + bake variant UX
+4. **Phase 4** — Cut-line constraints + multi-panel continuity
+5. **Phase 5** — GH export integration + fabrication package
+
+Full detail and first tasks: [`docs/studio/04-roadmap.md`](docs/studio/04-roadmap.md).
+
+**Start implementation at Phase 1** (manifest types, generated build, Play, bake).
+
+---
+
 ## 1. Coordinate System — Z-Up Right-Handed
 
 **Status: done**
@@ -421,6 +458,7 @@ Depends on: `oripop-math`, `oripop-geo`.
 
 ```
 oripop-math        — GPU-free math / DesignTree / Surface / CpuMesh
+oripop-project     — studio library + project manifest types (GPU-free)
 oripop-canvas      — creative engine kernel: canvas, fields, stipples, 2D API
 oripop-3d          — depends on oripop-math + oripop-canvas (window, wgpu, scene)
 oripop-runtime     — depends on oripop-3d (playback API facade; hot path migrates here)

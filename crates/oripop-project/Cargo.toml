@@ -1,0 +1,13 @@
+[package]
+name = "oripop-project"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Ori Pop Studio project and texture-library manifest types (GPU-free)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
