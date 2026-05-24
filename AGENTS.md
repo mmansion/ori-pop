@@ -60,13 +60,13 @@ Run a sketch (package `sketches`):
 cargo run -p sketches --bin 1-hello-ori-pop
 ```
 
-Run the studio stub (prints usage until the editor UI exists):
+Run the studio (opens the texture library window; CLI subcommands still available):
 
 ```bash
 cargo run -p oripop-studio
 ```
 
-Studio Phase 1 CLI (texture library):
+Studio CLI (optional):
 
 ```bash
 cargo run -p oripop-studio -- library list

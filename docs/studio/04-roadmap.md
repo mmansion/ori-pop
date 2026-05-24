@@ -43,8 +43,8 @@ projects.
    `CanvasKind`, `BakeManifest`); unit tests, no GPU. **Done.**
 3. **Provisional canvas adapter** — fixed-size RGBA buffer; stipple/field raster
    at configurable resolution (not only `STIPPLE_CANVAS_SIZE`).
-4. **Studio minimal shell** — egui window: library browser, open design, external
-   or embedded editor hook, **Play** invokes generated build for one design.
+4. **Studio minimal shell** — egui window: library browser, open design, **Play**
+   invokes generated build for one design. **Started:** `cargo run -p oripop-studio`.
 5. **Generated `.oripop/build/` Cargo** — one binary per library design.
 6. **Bake to PNG** — raster buffer at canvas resolution + write
    `*.bake.json` (frame, seed, params, `reproducible`).
