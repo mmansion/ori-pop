@@ -60,13 +60,17 @@ Run a sketch (package `sketches`):
 cargo run -p sketches --bin 1-hello-ori-pop
 ```
 
-Run the studio (opens the texture library window; CLI subcommands still available):
+Run the studio (single window: library browser on the left, embedded GPU
+preview and code editor on the right; the preview can be popped out into its
+own native window):
 
 ```bash
 cargo run -p oripop-studio
 ```
 
-Studio CLI (optional):
+Studio CLI (optional; `play` compiles and runs the design `main.rs` in a
+separate process for custom Rust entrypoints, `bake` renders headlessly via
+wgpu and writes a PNG + bake manifest):
 
 ```bash
 cargo run -p oripop-studio -- library list

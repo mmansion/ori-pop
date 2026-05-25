@@ -3,9 +3,13 @@
 mod app;
 mod bake;
 mod cli;
+mod editor;
 mod engine;
+mod gpu;
 mod paths;
 mod play;
+mod preview;
+mod window;
 
 use std::env;
 use std::process::ExitCode;

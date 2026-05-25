@@ -29,4 +29,4 @@ pub use field::{
 };
 pub use line::Line;
 pub use point::Point;
-pub use stipple::raster_dots;
+pub use stipple::draw_stipple;

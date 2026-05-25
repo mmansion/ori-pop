@@ -10,11 +10,15 @@ name = "oripop-studio"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.33", default-features = false, features = ["default_fonts", "wgpu"] }
+bytemuck.workspace = true
+eframe = { version = "0.33", default-features = false, features = ["default_fonts", "wgpu", "persistence"] }
+egui-wgpu.workspace = true
 image.workspace = true
 oripop-canvas = { path = "../oripop-canvas" }
 oripop-project = { path = "../oripop-project" }
 oripop-runtime = { path = "../oripop-runtime" }
+pollster.workspace = true
 serde_json.workspace = true
+wgpu.workspace = true
 
 [dev-dependencies]

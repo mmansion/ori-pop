@@ -1,4 +1,4 @@
-//! egui studio shell — library browser and Play / Bake controls.
+//! Studio shell — library browser, GPU preview, code editor, pop-out viewport.
 
 use std::path::PathBuf;
 
@@ -6,28 +6,38 @@ use eframe::egui;
 use oripop_project::TextureLibrary;
 
 use crate::bake::{self, BakeOptions};
-use crate::paths::{default_library_path, engine_root};
-use crate::play;
+use crate::editor::CodeEditor;
+use crate::gpu::PreviewGpu;
+use crate::paths::default_library_path;
+use crate::preview::EmbeddedPreview;
 
 pub struct StudioApp {
     library_path: PathBuf,
     library:      Option<TextureLibrary>,
     load_error:   Option<String>,
     selected:     Option<String>,
-    log:          Vec<String>,
+    status:       Option<String>,
     busy:         bool,
+    preview:      EmbeddedPreview,
+    editor:       CodeEditor,
+    gpu:          PreviewGpu,
+    popped_out:   bool,
 }
 
 impl StudioApp {
-    pub fn new() -> Self {
+    pub fn new(gpu: PreviewGpu) -> Self {
         let library_path = default_library_path();
         let mut app = Self {
             library_path,
             library: None,
             load_error: None,
             selected: None,
-            log: Vec::new(),
+            status: None,
             busy: false,
+            preview: EmbeddedPreview::new(),
+            editor: CodeEditor::empty(),
+            gpu,
+            popped_out: false,
         };
         app.reload_library();
         app
@@ -37,13 +47,17 @@ impl StudioApp {
         self.load_error = None;
         match TextureLibrary::load(&self.library_path) {
             Ok(lib) => {
-                self.push_log(format!(
+                self.set_status(format!(
                     "Loaded {} ({} designs)",
                     lib.manifest.title,
                     lib.designs().len()
                 ));
                 if self.selected.is_none() {
-                    self.selected = lib.designs().first().map(|d| d.id.clone());
+                    if let Some(id) = lib.designs().first().map(|d| d.id.clone()) {
+                        self.library = Some(lib);
+                        self.select_design(&id);
+                        return;
+                    }
                 }
                 self.library = Some(lib);
             }
@@ -54,84 +68,120 @@ impl StudioApp {
         }
     }
 
-    fn push_log(&mut self, msg: impl Into<String>) {
-        self.log.push(msg.into());
-        if self.log.len() > 64 {
-            self.log.remove(0);
+    fn set_status(&mut self, msg: impl Into<String>) {
+        self.status = Some(msg.into());
+    }
+
+    fn select_design(&mut self, id: &str) {
+        self.selected = Some(id.to_string());
+        if let Some(lib) = self.library.as_ref() {
+            self.preview.load(lib, id);
+            self.gpu.invalidate_target();
+            self.editor = CodeEditor::load(lib, id);
+            self.set_status(format!("Opened {id}"));
         }
     }
 
-    fn selected_id(&self) -> Option<&str> {
-        self.selected.as_deref()
-    }
-
-    fn run_play(&mut self) {
-        let Some(id) = self.selected.clone() else {
-            self.push_log("Select a design first.");
-            return;
-        };
-        if self.library.is_none() {
-            self.push_log("No library loaded.");
-            return;
+    fn save_editor(&mut self) {
+        match self.editor.save() {
+            Ok(()) => self.set_status(format!("Saved {}", self.editor.path.display())),
+            Err(e) => self.set_status(format!("Save failed: {e}")),
         }
-
-        self.busy = true;
-        self.push_log(format!("Building and launching {id}…"));
-        let path = self.library_path.clone();
-        let result = (|| -> Result<(), String> {
-            let library = TextureLibrary::load(&path).map_err(|e| e.to_string())?;
-            let engine = engine_root().map_err(|e| e.to_string())?;
-            play::spawn_play(&library, &id, &engine).map_err(|e| e.to_string())?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => self.push_log(format!("Playing {id} (preview window opened).")),
-            Err(e) => self.push_log(format!("Play failed: {e}")),
-        }
-        self.busy = false;
     }
 
     fn run_bake(&mut self) {
         let Some(id) = self.selected.clone() else {
-            self.push_log("Select a design first.");
+            self.set_status("Select a design first.");
             return;
         };
         if self.library.is_none() {
-            self.push_log("No library loaded.");
+            self.set_status("No library loaded.");
+            return;
+        }
+        if self.preview.params.is_none() {
+            self.set_status("Preview not ready.");
             return;
         }
 
         self.busy = true;
-        self.push_log(format!("Baking {id}…"));
-        let path = self.library_path.clone();
-        let result = (|| -> Result<(PathBuf, PathBuf), String> {
-            let library = TextureLibrary::load(&path).map_err(|e| e.to_string())?;
-            bake::bake(&library, &id, BakeOptions::default()).map_err(|e| e.to_string())
-        })();
+        self.set_status(format!("Baking {id}…"));
+        let params = self.preview.params.clone().unwrap();
+        let width  = self.preview.width;
+        let height = self.preview.height;
+        let opts   = BakeOptions {
+            time:  self.preview.time(),
+            frame: self.preview.frame,
+        };
+        let lib = self.library.as_ref().unwrap();
+        let result = bake::bake(lib, &id, &params, width, height, &mut self.gpu, opts);
+        // Bake re-bound the preview target's bind group; force a re-init so the
+        // preview keeps rendering into a registered texture next frame.
+        self.gpu.invalidate_target();
         match result {
-            Ok((png, manifest)) => {
-                self.push_log(format!("Baked {}", png.display()));
-                self.push_log(format!("Manifest {}", manifest.display()));
-            }
-            Err(e) => self.push_log(format!("Bake failed: {e}")),
+            Ok((png, _)) => self.set_status(format!("Baked {}", png.display())),
+            Err(e) => self.set_status(format!("Bake failed: {e}")),
         }
         self.busy = false;
+    }
+
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::S)) {
+            self.save_editor();
+        }
+    }
+
+    fn current_texture(&mut self) -> Option<egui::TextureId> {
+        let params = self.preview.params.as_ref()?.clone();
+        let t = self.preview.time();
+        self.gpu.render(&params, t)
+    }
+
+    fn draw_preview_body(
+        ui: &mut egui::Ui,
+        texture: Option<egui::TextureId>,
+        canvas_size: [f32; 2],
+        error: Option<&str>,
+        loaded: bool,
+    ) {
+        if let Some(err) = error {
+            ui.colored_label(egui::Color32::LIGHT_RED, err);
+            return;
+        }
+        if !loaded {
+            ui.centered_and_justified(|ui| {
+                ui.label("Select a design to preview.");
+            });
+            return;
+        }
+        let Some(tex) = texture else {
+            ui.centered_and_justified(|ui| ui.label("Rendering…"));
+            return;
+        };
+        let avail = ui.available_size();
+        let size = fit_size(avail, canvas_size);
+        ui.centered_and_justified(|ui| {
+            ui.image((tex, size));
+        });
     }
 }
 
 impl eframe::App for StudioApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_shortcuts(ctx);
+        self.preview.tick_frame();
+
+        let texture = self.current_texture();
+        let canvas_size = [self.preview.width as f32, self.preview.height as f32];
+
         egui::SidePanel::left("library_browser")
             .resizable(true)
-            .default_width(260.0)
+            .default_width(240.0)
+            .min_width(180.0)
             .show(ctx, |ui| {
-                ui.heading("Texture Library");
+                ui.heading("Designs");
                 ui.separator();
 
-                ui.label("Library path:");
-                ui.monospace(&self.library_path.display().to_string());
-
-                if ui.button("Reload").clicked() {
+                if ui.button("Reload library").clicked() {
                     self.reload_library();
                 }
 
@@ -141,77 +191,162 @@ impl eframe::App for StudioApp {
                     ui.colored_label(egui::Color32::LIGHT_RED, err);
                 } else if let Some(lib) = &self.library {
                     ui.label(format!(
-                        "{} · engine {}",
+                        "{} · {}",
                         lib.manifest.title, lib.manifest.engine_version
                     ));
                     ui.separator();
-                    ui.label("Designs");
+                    let designs: Vec<_> = lib
+                        .designs()
+                        .iter()
+                        .map(|e| (e.id.clone(), self.selected.as_deref() == Some(e.id.as_str())))
+                        .collect();
+                    let mut pick: Option<String> = None;
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        for entry in lib.designs() {
-                            let selected = self.selected.as_deref() == Some(entry.id.as_str());
-                            if ui.selectable_label(selected, &entry.id).clicked() {
-                                self.selected = Some(entry.id.clone());
+                        for (id, selected) in &designs {
+                            if ui.selectable_label(*selected, id).clicked() {
+                                pick = Some(id.clone());
                             }
                         }
                     });
+                    if let Some(id) = pick {
+                        self.select_design(&id);
+                    }
+                }
+
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    if let Some(status) = &self.status {
+                        ui.separator();
+                        ui.label(status);
+                    }
+                    ui.separator();
+                    ui.monospace(self.library_path.display().to_string());
+                });
+            });
+
+        egui::TopBottomPanel::bottom("code_editor")
+            .resizable(true)
+            .default_height(280.0)
+            .min_height(120.0)
+            .show(ctx, |ui| {
+                if self.editor.draw(ui) {
+                    self.save_editor();
                 }
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Ori Pop Studio");
-            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-            ui.separator();
-
             ui.horizontal(|ui| {
-                let can_run = !self.busy && self.selected_id().is_some() && self.library.is_some();
-                ui.add_enabled_ui(can_run, |ui| {
-                    if ui.button("▶  Play").clicked() {
-                        self.run_play();
-                    }
-                    if ui.button("Bake PNG").clicked() {
-                        self.run_bake();
-                    }
-                });
-                if self.busy {
-                    ui.spinner();
+                ui.heading("Preview");
+                if let Some(id) = self.selected.as_deref() {
+                    ui.label(format!("— {id}"));
                 }
+                if self.preview.is_loaded() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} × {} · frame {}",
+                            self.preview.width, self.preview.height, self.preview.frame
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.busy {
+                        ui.spinner();
+                    }
+                    let has_design = self.selected.is_some() && self.library.is_some();
+                    ui.add_enabled_ui(has_design && !self.busy, |ui| {
+                        if ui.button("Bake PNG").clicked() {
+                            self.run_bake();
+                        }
+                        let play_label = if self.preview.is_playing() {
+                            "Pause"
+                        } else {
+                            "Play"
+                        };
+                        if ui.button(play_label).clicked() {
+                            self.preview.toggle_playing();
+                        }
+                        let popout_label = if self.popped_out {
+                            "Close window"
+                        } else {
+                            "Pop out"
+                        };
+                        if ui.button(popout_label).clicked() {
+                            self.popped_out = !self.popped_out;
+                        }
+                    });
+                });
             });
-
-            if let Some(id) = self.selected_id() {
-                ui.separator();
-                ui.label(format!("Selected: {id}"));
-                if let Some(lib) = self.library.as_ref() {
-                    if let Ok((dir, manifest)) = lib.design(id) {
-                        ui.label(format!("Title: {}", manifest.title));
-                        ui.monospace(dir.display().to_string());
-                    }
-                }
-            }
-
             ui.separator();
-            ui.label("Log");
-            egui::ScrollArea::vertical()
-                .max_height(220.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for line in &self.log {
-                        ui.monospace(line);
-                    }
-                });
+            Self::draw_preview_body(
+                ui,
+                texture,
+                canvas_size,
+                self.preview.error.as_deref(),
+                self.preview.is_loaded(),
+            );
         });
+
+        if self.popped_out {
+            let title = match self.selected.as_deref() {
+                Some(id) => format!("Ori Pop — {id}"),
+                None => "Ori Pop Preview".to_string(),
+            };
+            let viewport_id = egui::ViewportId::from_hash_of("preview_popout");
+            let builder = egui::ViewportBuilder::default()
+                .with_title(title)
+                .with_inner_size(canvas_size_with_min(canvas_size, [640.0, 640.0]))
+                .with_min_inner_size([320.0, 320.0]);
+            ctx.show_viewport_immediate(viewport_id, builder, |vctx, _class| {
+                if vctx.input(|i| i.viewport().close_requested()) {
+                    self.popped_out = false;
+                }
+                egui::CentralPanel::default().show(vctx, |ui| {
+                    Self::draw_preview_body(
+                        ui,
+                        texture,
+                        canvas_size,
+                        self.preview.error.as_deref(),
+                        self.preview.is_loaded(),
+                    );
+                });
+            });
+        }
+
+        if self.preview.is_playing() {
+            ctx.request_repaint();
+        }
     }
 }
 
+fn fit_size(avail: egui::Vec2, tex: [f32; 2]) -> egui::Vec2 {
+    if tex[0] <= 0.0 || tex[1] <= 0.0 {
+        return avail;
+    }
+    let scale = (avail.x / tex[0]).min(avail.y / tex[1]).min(1.0);
+    egui::vec2(
+        (tex[0] * scale).floor().max(1.0),
+        (tex[1] * scale).floor().max(1.0),
+    )
+}
+
+fn canvas_size_with_min(canvas: [f32; 2], min: [f32; 2]) -> [f32; 2] {
+    [canvas[0].max(min[0]), canvas[1].max(min[1])]
+}
+
 pub fn run_gui() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([960.0, 640.0])
-            .with_title("Ori Pop Studio"),
-        ..Default::default()
-    };
     eframe::run_native(
         "Ori Pop Studio",
-        options,
-        Box::new(|_cc| Ok(Box::new(StudioApp::new()) as Box<dyn eframe::App>)),
+        crate::window::main_window_options(),
+        Box::new(|cc| {
+            cc.egui_ctx
+                .options_mut(|o| o.tessellation_options.feathering = true);
+            let render_state = cc
+                .wgpu_render_state
+                .as_ref()
+                .expect("oripop-studio requires the eframe wgpu backend");
+            let gpu = PreviewGpu::new(render_state);
+            Ok(Box::new(StudioApp::new(gpu)) as Box<dyn eframe::App>)
+        }),
     )
 }

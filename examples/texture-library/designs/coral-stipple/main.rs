@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use oripop_runtime::prelude::*;
-use oripop_canvas::{generate_dots, Params};
+use oripop_canvas::{draw_stipple, Params};
 
 static PARAMS: OnceLock<Params> = OnceLock::new();
 
@@ -30,16 +30,6 @@ fn load_params() -> Params {
 
 fn draw() {
     let params = PARAMS.get().expect("params");
-    background(10, 10, 14);
-
     let t = frame_count() as f32 / 60.0;
-    let dots = generate_dots(params, t);
-
-    no_stroke();
-    for dot in &dots {
-        let lum = (dot.w * 220.0 + 35.0).min(255.0) as u8;
-        fill_a(lum, lum, lum.saturating_add(6), 255);
-        let s = dot.r * params.canvas.width * 2.0;
-        rect(dot.x - s * 0.5, dot.y - s * 0.5, s, s);
-    }
+    draw_stipple(params, t);
 }

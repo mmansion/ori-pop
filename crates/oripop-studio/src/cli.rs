@@ -8,8 +8,10 @@ use std::process::ExitCode;
 use oripop_project::TextureLibrary;
 
 use crate::bake::BakeOptions;
+use crate::gpu::PreviewGpu;
 use crate::paths::{default_library_path, engine_root};
 use crate::play;
+use crate::preview::load_preview_params;
 
 pub fn run_cli() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -76,7 +78,17 @@ fn cmd_play(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
 fn cmd_bake(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
     let rest: Vec<_> = args.collect();
     let (library, design) = parse_library_and_design(&rest)?;
-    let (png, manifest) = crate::bake::bake(&library, &design, BakeOptions::default())?;
+    let (params, width, height) = load_preview_params(&library, &design)?;
+    let mut gpu = PreviewGpu::new_headless()?;
+    let (png, manifest) = crate::bake::bake(
+        &library,
+        &design,
+        &params,
+        width,
+        height,
+        &mut gpu,
+        BakeOptions::default(),
+    )?;
     println!("baked {}", png.display());
     println!("manifest {}", manifest.display());
     Ok(())
