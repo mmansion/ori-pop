@@ -8,25 +8,29 @@
 //!
 //! ## Geometry primitives
 //! [`Point`], [`Line`], [`Bezier`] — 2D primitives used by the field system.
-//! (Future: promoted to 3D types in `oripop-math`.)
 //!
 //! ## Field engine
 //! [`field`] — scalar field evaluation ([`field::Force`], [`field::eval_force`],
 //! [`field::field_at`]) and dot distribution ([`field::generate_dots`]).
+//!
+//! ## Dynamic linking
+//! Built as both an `rlib` (for standalone bins) and a `dylib` (so the studio
+//! and dynamically-loaded texture cartridges share the same thread-local draw
+//! state at runtime). When Cargo builds an executable that links a `dylib`,
+//! the resulting binary requires the same shared library at runtime.
 
 pub mod bezier;
+pub mod cartridge;
 pub mod draw;
 pub mod field;
 pub mod line;
 pub mod point;
 pub mod prelude;
-pub mod stipple;
 
 pub use bezier::{Bezier, DensityProfile};
 pub use field::{
-    Canvas, Distribution, Dot, Field, Force, Params, Render, Singularity,
     density_at, eval_force, field_at, generate_dots,
+    Canvas, Distribution, Dot, Field, Force, Params, Render, Singularity,
 };
 pub use line::Line;
 pub use point::Point;
-pub use stipple::draw_stipple;

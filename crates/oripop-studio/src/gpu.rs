@@ -8,8 +8,9 @@ use std::num::NonZeroU64;
 
 use bytemuck::{Pod, Zeroable};
 use eframe::egui;
-use oripop_canvas::draw::{begin_frame, take_2d_vertices, vertex_2d_buffer_layout, SHADER_2D_WGSL};
-use oripop_canvas::{draw_stipple, Params};
+use oripop_canvas::draw::{vertex_2d_buffer_layout, SHADER_2D_WGSL};
+
+use crate::cartridge::Cartridge;
 
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const MSAA_SAMPLES:  u32 = 4;
@@ -99,15 +100,19 @@ impl PreviewGpu {
         }
     }
 
-    /// Render `params` at time `t` (seconds) into the cached preview texture
-    /// and return its egui texture id for display.
-    pub fn render(&mut self, params: &Params, t: f32) -> Option<egui::TextureId> {
-        let width  = params.canvas.width.max(1.0)  as u32;
-        let height = params.canvas.height.max(1.0) as u32;
+    /// Render `cartridge` at time `t` (seconds) into the cached preview
+    /// texture and return its egui texture id for display.
+    pub fn render(
+        &mut self,
+        cartridge: &Cartridge,
+        t: f32,
+        width: u32,
+        height: u32,
+    ) -> Option<egui::TextureId> {
         self.ensure_target(width, height, /*register*/ true);
 
-        let (bg, vbytes) = run_draw(params, t);
-        self.upload_vertices(&vbytes);
+        let frame = cartridge.render(t);
+        self.upload_vertices(&frame.vertices);
 
         let target = self.target.as_ref().expect("target");
         encode_render(
@@ -118,14 +123,20 @@ impl PreviewGpu {
             &target.bind_group,
             &target.color_view,
             &target.msaa_view,
-            bg,
-            vbytes.len(),
+            frame.bg,
+            frame.vertices.len(),
         );
         target.egui_id
     }
 
     /// Render once at the requested time and return tightly-packed RGBA8 pixels (no padding).
-    pub fn bake_rgba(&mut self, params: &Params, t: f32, width: u32, height: u32) -> Vec<u8> {
+    pub fn bake_rgba(
+        &mut self,
+        cartridge: &Cartridge,
+        t: f32,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
         let RenderTargets {
             color,
             color_view,
@@ -142,8 +153,8 @@ impl PreviewGpu {
             }]),
         );
 
-        let (bg, vbytes) = run_draw(params, t);
-        self.upload_vertices(&vbytes);
+        let frame = cartridge.render(t);
+        self.upload_vertices(&frame.vertices);
         encode_render(
             &self.device,
             &self.queue,
@@ -152,9 +163,10 @@ impl PreviewGpu {
             &bind_group,
             &color_view,
             &msaa_view,
-            bg,
-            vbytes.len(),
+            frame.bg,
+            frame.vertices.len(),
         );
+        drop(frame);
 
         let bytes_per_pixel = 4u32;
         let unpadded_row = width * bytes_per_pixel;
@@ -279,12 +291,6 @@ impl PreviewGpu {
         self.queue
             .write_buffer(self.vertex_buf.as_ref().unwrap(), 0, bytes);
     }
-}
-
-fn run_draw(params: &Params, t: f32) -> (wgpu::Color, Vec<u8>) {
-    begin_frame();
-    draw_stipple(params, t);
-    take_2d_vertices()
 }
 
 fn encode_render(

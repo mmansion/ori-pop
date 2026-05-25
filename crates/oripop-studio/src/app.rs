@@ -1,19 +1,19 @@
-//! Studio shell — library browser, GPU preview, code editor, pop-out viewport.
+//! Studio shell — project browser, GPU preview, code editor, pop-out viewport.
 
 use std::path::PathBuf;
 
 use eframe::egui;
-use oripop_project::TextureLibrary;
+use oripop_project::Project;
 
 use crate::bake::{self, BakeOptions};
 use crate::editor::CodeEditor;
 use crate::gpu::PreviewGpu;
-use crate::paths::default_library_path;
+use crate::paths::default_project_path;
 use crate::preview::EmbeddedPreview;
 
 pub struct StudioApp {
-    library_path: PathBuf,
-    library:      Option<TextureLibrary>,
+    project_path: PathBuf,
+    project:      Option<Project>,
     load_error:   Option<String>,
     selected:     Option<String>,
     status:       Option<String>,
@@ -26,10 +26,10 @@ pub struct StudioApp {
 
 impl StudioApp {
     pub fn new(gpu: PreviewGpu) -> Self {
-        let library_path = default_library_path();
+        let project_path = default_project_path();
         let mut app = Self {
-            library_path,
-            library: None,
+            project_path,
+            project: None,
             load_error: None,
             selected: None,
             status: None,
@@ -39,31 +39,31 @@ impl StudioApp {
             gpu,
             popped_out: false,
         };
-        app.reload_library();
+        app.reload_project();
         app
     }
 
-    fn reload_library(&mut self) {
+    fn reload_project(&mut self) {
         self.load_error = None;
-        match TextureLibrary::load(&self.library_path) {
-            Ok(lib) => {
+        match Project::load(&self.project_path) {
+            Ok(proj) => {
                 self.set_status(format!(
-                    "Loaded {} ({} designs)",
-                    lib.manifest.title,
-                    lib.designs().len()
+                    "Loaded {} ({} textures)",
+                    proj.manifest.title,
+                    proj.textures.len()
                 ));
                 if self.selected.is_none() {
-                    if let Some(id) = lib.designs().first().map(|d| d.id.clone()) {
-                        self.library = Some(lib);
-                        self.select_design(&id);
+                    if let Some(id) = proj.textures.first().map(|t| t.id.clone()) {
+                        self.project = Some(proj);
+                        self.select_texture(&id);
                         return;
                     }
                 }
-                self.library = Some(lib);
+                self.project = Some(proj);
             }
             Err(e) => {
                 self.load_error = Some(e.to_string());
-                self.library = None;
+                self.project = None;
             }
         }
     }
@@ -72,50 +72,68 @@ impl StudioApp {
         self.status = Some(msg.into());
     }
 
-    fn select_design(&mut self, id: &str) {
+    fn select_texture(&mut self, id: &str) {
         self.selected = Some(id.to_string());
-        if let Some(lib) = self.library.as_ref() {
-            self.preview.load(lib, id);
-            self.gpu.invalidate_target();
-            self.editor = CodeEditor::load(lib, id);
+        let Some(proj) = self.project.clone() else {
+            return;
+        };
+        self.set_status(format!("Compiling {id}…"));
+        self.preview.load(&proj, id);
+        self.gpu.invalidate_target();
+        self.editor = CodeEditor::load(&proj, id);
+        if let Some(err) = self.preview.error.clone() {
+            self.set_status(format!("Failed: {err}"));
+        } else {
             self.set_status(format!("Opened {id}"));
         }
     }
 
     fn save_editor(&mut self) {
         match self.editor.save() {
-            Ok(()) => self.set_status(format!("Saved {}", self.editor.path.display())),
+            Ok(()) => {
+                self.set_status(format!("Saved {}", self.editor.path.display()));
+                if let Some(id) = self.selected.clone() {
+                    self.set_status(format!("Recompiling {id}…"));
+                    let proj = self.project.as_ref().cloned();
+                    if let Some(proj) = proj {
+                        self.preview.load(&proj, &id);
+                        self.gpu.invalidate_target();
+                        if let Some(err) = &self.preview.error {
+                            self.set_status(format!("Build failed: {err}"));
+                        } else {
+                            self.set_status(format!("Reloaded {id}"));
+                        }
+                    }
+                }
+            }
             Err(e) => self.set_status(format!("Save failed: {e}")),
         }
     }
 
     fn run_bake(&mut self) {
         let Some(id) = self.selected.clone() else {
-            self.set_status("Select a design first.");
+            self.set_status("Select a texture first.");
             return;
         };
-        if self.library.is_none() {
-            self.set_status("No library loaded.");
+        let Some(proj) = self.project.clone() else {
+            self.set_status("No project loaded.");
             return;
-        }
-        if self.preview.params.is_none() {
+        };
+        if self.preview.cartridge.is_none() {
             self.set_status("Preview not ready.");
             return;
         }
 
         self.busy = true;
         self.set_status(format!("Baking {id}…"));
-        let params = self.preview.params.clone().unwrap();
         let width  = self.preview.width;
         let height = self.preview.height;
         let opts   = BakeOptions {
             time:  self.preview.time(),
             frame: self.preview.frame,
         };
-        let lib = self.library.as_ref().unwrap();
-        let result = bake::bake(lib, &id, &params, width, height, &mut self.gpu, opts);
-        // Bake re-bound the preview target's bind group; force a re-init so the
-        // preview keeps rendering into a registered texture next frame.
+        let cartridge = self.preview.cartridge.as_ref().unwrap();
+        let result = bake::bake(&proj, &id, cartridge, width, height, &mut self.gpu, opts);
         self.gpu.invalidate_target();
         match result {
             Ok((png, _)) => self.set_status(format!("Baked {}", png.display())),
@@ -131,9 +149,11 @@ impl StudioApp {
     }
 
     fn current_texture(&mut self) -> Option<egui::TextureId> {
-        let params = self.preview.params.as_ref()?.clone();
+        let cartridge = self.preview.cartridge.as_ref()?;
         let t = self.preview.time();
-        self.gpu.render(&params, t)
+        let w = self.preview.width;
+        let h = self.preview.height;
+        self.gpu.render(cartridge, t, w, h)
     }
 
     fn draw_preview_body(
@@ -149,7 +169,7 @@ impl StudioApp {
         }
         if !loaded {
             ui.centered_and_justified(|ui| {
-                ui.label("Select a design to preview.");
+                ui.label("Select a texture to preview.");
             });
             return;
         }
@@ -173,43 +193,43 @@ impl eframe::App for StudioApp {
         let texture = self.current_texture();
         let canvas_size = [self.preview.width as f32, self.preview.height as f32];
 
-        egui::SidePanel::left("library_browser")
+        egui::SidePanel::left("project_browser")
             .resizable(true)
             .default_width(240.0)
             .min_width(180.0)
             .show(ctx, |ui| {
-                ui.heading("Designs");
+                ui.heading("Textures");
                 ui.separator();
 
-                if ui.button("Reload library").clicked() {
-                    self.reload_library();
+                if ui.button("Reload project").clicked() {
+                    self.reload_project();
                 }
 
                 ui.separator();
 
                 if let Some(err) = &self.load_error {
                     ui.colored_label(egui::Color32::LIGHT_RED, err);
-                } else if let Some(lib) = &self.library {
+                } else if let Some(proj) = &self.project {
                     ui.label(format!(
                         "{} · {}",
-                        lib.manifest.title, lib.manifest.engine_version
+                        proj.manifest.title, proj.manifest.engine_version
                     ));
                     ui.separator();
-                    let designs: Vec<_> = lib
-                        .designs()
+                    let entries: Vec<_> = proj
+                        .textures
                         .iter()
-                        .map(|e| (e.id.clone(), self.selected.as_deref() == Some(e.id.as_str())))
+                        .map(|t| (t.id.clone(), self.selected.as_deref() == Some(t.id.as_str())))
                         .collect();
                     let mut pick: Option<String> = None;
                     egui::ScrollArea::vertical().show(ui, |ui| {
-                        for (id, selected) in &designs {
+                        for (id, selected) in &entries {
                             if ui.selectable_label(*selected, id).clicked() {
                                 pick = Some(id.clone());
                             }
                         }
                     });
                     if let Some(id) = pick {
-                        self.select_design(&id);
+                        self.select_texture(&id);
                     }
                 }
 
@@ -219,7 +239,7 @@ impl eframe::App for StudioApp {
                         ui.label(status);
                     }
                     ui.separator();
-                    ui.monospace(self.library_path.display().to_string());
+                    ui.monospace(self.project_path.display().to_string());
                 });
             });
 
@@ -253,8 +273,8 @@ impl eframe::App for StudioApp {
                     if self.busy {
                         ui.spinner();
                     }
-                    let has_design = self.selected.is_some() && self.library.is_some();
-                    ui.add_enabled_ui(has_design && !self.busy, |ui| {
+                    let has_texture = self.selected.is_some() && self.project.is_some();
+                    ui.add_enabled_ui(has_texture && !self.busy, |ui| {
                         if ui.button("Bake PNG").clicked() {
                             self.run_bake();
                         }

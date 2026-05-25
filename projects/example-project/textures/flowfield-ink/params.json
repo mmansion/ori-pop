@@ -1,0 +1,13 @@
+{
+  "canvas": { "width": 1024.0, "height": 1024.0 },
+  "seed": 42,
+  "particles": 900,
+  "max_steps": 220,
+  "step_length": 1.6,
+  "noise_scale": 0.0042,
+  "noise_octaves": 3,
+  "time_warp": 0.35,
+  "stroke": [235, 240, 245, 22],
+  "stroke_weight": 0.85,
+  "background": [8, 9, 14]
+}

@@ -1,17 +1,16 @@
-//! CLI subcommands (library, play, bake).
+//! CLI subcommands (project list, bake).
 
 use std::env;
 use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use oripop_project::TextureLibrary;
+use oripop_project::Project;
 
 use crate::bake::BakeOptions;
 use crate::gpu::PreviewGpu;
-use crate::paths::{default_library_path, engine_root};
-use crate::play;
-use crate::preview::load_preview_params;
+use crate::paths::default_project_path;
+use crate::preview::load_cartridge;
 
 pub fn run_cli() -> ExitCode {
     let mut args = env::args().skip(1);
@@ -21,8 +20,7 @@ pub fn run_cli() -> ExitCode {
     };
 
     let result = match cmd.as_str() {
-        "library" => cmd_library(&mut args),
-        "play" => cmd_play(&mut args),
+        "project" => cmd_project(&mut args),
         "bake" => cmd_bake(&mut args),
         "help" | "-h" | "--help" => {
             print_usage();
@@ -44,46 +42,42 @@ pub fn run_cli() -> ExitCode {
     }
 }
 
-fn cmd_library(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
+fn cmd_project(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
     let sub = args.next().unwrap_or_else(|| "help".to_string());
     match sub.as_str() {
         "list" => {
             let rest: Vec<_> = args.collect();
-            let path = flag_path(&rest, "--library").unwrap_or_else(default_library_path);
-            let library = TextureLibrary::load(&path)?;
-            println!("{} ({})", library.manifest.title, library.manifest.engine_version);
-            if library.designs().is_empty() {
-                println!("  (no designs)");
+            let path = flag_path(&rest, "--project").unwrap_or_else(default_project_path);
+            let project = Project::load(&path)?;
+            println!(
+                "{} ({})",
+                project.manifest.title, project.manifest.engine_version
+            );
+            if project.textures.is_empty() {
+                println!("  (no textures)");
             } else {
-                for d in library.designs() {
-                    println!("  {}  {}", d.id, d.path);
+                for t in &project.textures {
+                    println!("  {}  {}", t.id, t.path.display());
                 }
             }
             Ok(())
         }
         _ => {
-            eprintln!("usage: oripop-studio library list [--library PATH]");
+            eprintln!("usage: oripop-studio project list [--project PATH]");
             Ok(())
         }
     }
 }
 
-fn cmd_play(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
-    let rest: Vec<_> = args.collect();
-    let (library, design) = parse_library_and_design(&rest)?;
-    let engine = engine_root()?;
-    play::play(&library, &design, &engine)
-}
-
 fn cmd_bake(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
     let rest: Vec<_> = args.collect();
-    let (library, design) = parse_library_and_design(&rest)?;
-    let (params, width, height) = load_preview_params(&library, &design)?;
+    let (project, texture_id) = parse_project_and_texture(&rest)?;
+    let (cartridge, width, height) = load_cartridge(&project, &texture_id)?;
     let mut gpu = PreviewGpu::new_headless()?;
     let (png, manifest) = crate::bake::bake(
-        &library,
-        &design,
-        &params,
+        &project,
+        &texture_id,
+        &cartridge,
         width,
         height,
         &mut gpu,
@@ -94,13 +88,13 @@ fn cmd_bake(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
     Ok(())
 }
 
-fn parse_library_and_design(rest: &[String]) -> io::Result<(TextureLibrary, String)> {
-    let path = flag_path(rest, "--library").unwrap_or_else(default_library_path);
-    let library = TextureLibrary::load(&path)?;
-    let design = flag(rest, "--design").ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "--design is required")
+fn parse_project_and_texture(rest: &[String]) -> io::Result<(Project, String)> {
+    let path = flag_path(rest, "--project").unwrap_or_else(default_project_path);
+    let project = Project::load(&path)?;
+    let texture = flag(rest, "--texture").ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "--texture is required")
     })?;
-    Ok((library, design))
+    Ok((project, texture))
 }
 
 fn flag(rest: &[String], name: &str) -> Option<String> {
@@ -116,16 +110,15 @@ fn flag_path(rest: &[String], name: &str) -> Option<PathBuf> {
 
 pub fn print_usage() {
     eprintln!(
-        "oripop-studio {} — texture library shell\n\
+        "oripop-studio {} — texture project shell\n\
          \n\
          Launch with no arguments to open the studio window.\n\
          \n\
          COMMANDS:\n\
-           library list [--library PATH]     List designs in a texture library\n\
-           play --design ID [--library PATH] Generate build, compile, and run design\n\
-           bake --design ID [--library PATH] Headless stipple bake → PNG + manifest\n\
+           project list [--project PATH]                List textures in a project\n\
+           bake --texture ID [--project PATH]           Headless GPU bake → PNG + manifest\n\
          \n\
-         Default library: examples/texture-library (relative to engine root)\n",
+         Default project: projects/example-project (relative to engine root)\n",
         env!("CARGO_PKG_VERSION")
     );
 }

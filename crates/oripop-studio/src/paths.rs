@@ -1,4 +1,4 @@
-//! Default paths for library and engine root.
+//! Default paths for project and engine root.
 
 use std::env;
 use std::io;
@@ -15,9 +15,9 @@ pub fn engine_root() -> io::Result<PathBuf> {
     })
 }
 
-pub fn default_library_path() -> PathBuf {
+pub fn default_project_path() -> PathBuf {
     if let Ok(root) = engine_root() {
-        return root.join("examples/texture-library");
+        return root.join("projects/example-project");
     }
-    PathBuf::from("examples/texture-library")
+    PathBuf::from("projects/example-project")
 }

@@ -17,11 +17,12 @@ Published guide: https://mmansion.github.io/ori-pop/
 | Path | Crate / role |
 |------|----------------|
 | `crates/oripop-math` | Shared math and design-tree types. **Must stay free of GPU and windowing** (`wgpu`, `winit`, `egui` do not belong here). Uses `glam`, `serde`, `serde_json`, `ron`. Intended to remain headless and easy to test. |
-| `crates/oripop-project` | Studio project and texture-library manifest types (`DesignManifest`, atlas, bake). GPU-free; serde JSON. |
-| `crates/oripop-canvas` | Creative engine kernel: Processing-style 2D drawing API, scalar fields, stipples (includes `wgpu` / `winit` for the sketch API). |
+| `crates/oripop-project` | Studio project and texture manifest types (`Project`, `TextureManifest`, atlas, bake). GPU-free; serde JSON. |
+| `crates/oripop-canvas` | Creative engine kernel: Processing-style 2D drawing API, scalar fields, plus the `cartridge` helper that lets dynamically-loaded textures emit frames to the host. |
 | `crates/oripop-3d` | Real-time 3D: `wgpu`, `egui`, windowing, scene and camera. Depends on `oripop-canvas` and `oripop-math`. |
-| `crates/oripop-runtime` | Playback API boundary: re-exports `run3d` and prelude from `oripop-3d` today; future home of the optimized frame loop. |
-| `crates/oripop-studio` | Ori Pop Studio binary (stub): future control surface and Play shell; depends on `oripop-runtime`. |
+| `crates/oripop-runtime` | Playback API boundary: re-exports `run3d` and prelude from `oripop-3d`. Used by standalone texture binaries and sketches. |
+| `crates/oripop-studio` | Ori Pop Studio binary: GUI shell + CLI. Compiles textures on demand and loads them via `libloading`. |
+| `projects/example-project/textures/*` | Example texture cartridges (each is its own Cargo crate that builds a `cdylib` + standalone `bin`). |
 | `sketches/` | Binary demos and experiments. Depends on `oripop-canvas` and `oripop-3d`. Appropriate place for one-off exploration. |
 | `guide/` | mdBook source for the ORI-POP Guide. |
 | `presets/` | JSON presets (for example `presets/default.json`). |
@@ -60,22 +61,28 @@ Run a sketch (package `sketches`):
 cargo run -p sketches --bin 1-hello-ori-pop
 ```
 
-Run the studio (single window: library browser on the left, embedded GPU
+Run the studio (single window: texture browser on the left, embedded GPU
 preview and code editor on the right; the preview can be popped out into its
-own native window):
+own native window). Selecting a texture compiles its `cdylib` on demand and
+loads it via `libloading`; saving the source recompiles + reloads:
 
 ```bash
 cargo run -p oripop-studio
 ```
 
-Studio CLI (optional; `play` compiles and runs the design `main.rs` in a
-separate process for custom Rust entrypoints, `bake` renders headlessly via
-wgpu and writes a PNG + bake manifest):
+Run a texture standalone (each texture is also a regular Cargo bin):
 
 ```bash
-cargo run -p oripop-studio -- library list
-cargo run -p oripop-studio -- bake --design coral-stipple
-cargo run -p oripop-studio -- play --design coral-stipple
+cargo run -p coral-stipple
+cargo run -p lsystem-tree
+cargo run -p flowfield-ink
+```
+
+Studio CLI (list textures in the current project, headless GPU bake):
+
+```bash
+cargo run -p oripop-studio -- project list
+cargo run -p oripop-studio -- bake --texture coral-stipple
 ```
 
 Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `2-primitives-demo`, `3-transform-demo`, `4-alpha-demo`, `5-forces-demo`, `6-interactive-demo`, `7-textured-3d-demo`, `8-lsystem-3d`, `9-curves-demo`, `10-curves-3d-demo`, `11-distribution-dial-demo`.

@@ -1,0 +1,21 @@
+[package]
+name = "flowfield-ink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Flowfield ink traces — example texture."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "flowfield-ink-play"
+path = "src/bin.rs"
+
+[dependencies]
+oripop-canvas = { path = "../../../../crates/oripop-canvas" }
+oripop-runtime = { path = "../../../../crates/oripop-runtime" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true

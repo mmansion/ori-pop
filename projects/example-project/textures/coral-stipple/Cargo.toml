@@ -1,0 +1,20 @@
+[package]
+name = "coral-stipple"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Coral stipple field — example texture."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "coral-stipple-play"
+path = "src/bin.rs"
+
+[dependencies]
+oripop-canvas = { path = "../../../../crates/oripop-canvas" }
+oripop-runtime = { path = "../../../../crates/oripop-runtime" }
+serde.workspace = true
+serde_json.workspace = true

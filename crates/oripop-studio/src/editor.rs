@@ -1,11 +1,11 @@
-//! Design source editor (`main.rs`).
+//! Texture source editor (`src/lib.rs`).
 
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
 use eframe::egui;
-use oripop_project::TextureLibrary;
+use oripop_project::Project;
 
 pub struct CodeEditor {
     pub path:   PathBuf,
@@ -17,10 +17,10 @@ pub struct CodeEditor {
 impl CodeEditor {
     pub fn empty() -> Self {
         Self {
-            path: PathBuf::new(),
+            path:   PathBuf::new(),
             source: String::new(),
-            saved: String::new(),
-            error: None,
+            saved:  String::new(),
+            error:  None,
         }
     }
 
@@ -28,10 +28,10 @@ impl CodeEditor {
         !self.path.as_os_str().is_empty() && self.source != self.saved
     }
 
-    pub fn load(library: &TextureLibrary, design_id: &str) -> Self {
-        match library.design(design_id) {
-            Ok((dir, manifest)) => {
-                let path = dir.join(&manifest.entry);
+    pub fn load(project: &Project, texture_id: &str) -> Self {
+        match project.texture(texture_id) {
+            Ok((dir, _manifest)) => {
+                let path = dir.join("src").join("lib.rs");
                 match fs::read_to_string(&path) {
                     Ok(source) => Self {
                         path,
@@ -42,26 +42,23 @@ impl CodeEditor {
                     Err(e) => Self {
                         path,
                         source: String::new(),
-                        saved: String::new(),
-                        error: Some(e.to_string()),
+                        saved:  String::new(),
+                        error:  Some(e.to_string()),
                     },
                 }
             }
             Err(e) => Self {
-                path: PathBuf::new(),
+                path:   PathBuf::new(),
                 source: String::new(),
-                saved: String::new(),
-                error: Some(e.to_string()),
+                saved:  String::new(),
+                error:  Some(e.to_string()),
             },
         }
     }
 
     pub fn save(&mut self) -> io::Result<()> {
         if self.path.as_os_str().is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "no file loaded",
-            ));
+            return Err(io::Error::new(io::ErrorKind::NotFound, "no file loaded"));
         }
         fs::write(&self.path, &self.source)?;
         self.saved = self.source.clone();

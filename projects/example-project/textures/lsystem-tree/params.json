@@ -1,0 +1,16 @@
+{
+  "canvas": { "width": 1024.0, "height": 1024.0 },
+  "axiom": "F",
+  "rule_in": "F",
+  "rule_out": "FF+[+F-F-F]-[-F+F+F]",
+  "iterations": 4,
+  "angle_deg": 24.0,
+  "angle_wobble": 2.5,
+  "step": 7.5,
+  "start_x": 512.0,
+  "start_y": 1020.0,
+  "start_angle_deg": -90.0,
+  "stroke": [220, 225, 230, 220],
+  "stroke_weight": 1.4,
+  "background": [10, 12, 18]
+}

@@ -3,7 +3,7 @@ name = "oripop-project"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Ori Pop Studio project and texture-library manifest types (GPU-free)"
+description = "Ori Pop Studio project and texture manifest types (GPU-free)"
 
 [dependencies]
 serde = { workspace = true }

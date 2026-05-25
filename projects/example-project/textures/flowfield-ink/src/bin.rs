@@ -1,14 +1,12 @@
-//! Example library design — field stipple loaded from `params.json`.
-//!
-//! Play sets `ORIPOP_DESIGN_DIR` to this folder.
+//! Standalone runtime: run with `cargo run -p flowfield-ink` from the workspace.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use flowfield_ink::{draw, FlowfieldParams};
 use oripop_runtime::prelude::*;
-use oripop_canvas::{draw_stipple, Params};
 
-static PARAMS: OnceLock<Params> = OnceLock::new();
+static PARAMS: OnceLock<FlowfieldParams> = OnceLock::new();
 
 fn main() {
     let params = load_params();
@@ -16,20 +14,22 @@ fn main() {
     let h = params.canvas.height.max(1.0) as u32;
     PARAMS.set(params).expect("params init");
     size(w, h);
-    title("coral-stipple");
+    title("flowfield-ink");
     smooth(4);
-    run(draw);
+    run(draw_frame);
 }
 
-fn load_params() -> Params {
-    let dir = std::env::var("ORIPOP_DESIGN_DIR").expect("ORIPOP_DESIGN_DIR must be set by oripop-studio play");
+fn load_params() -> FlowfieldParams {
+    let dir = std::env::var("ORIPOP_TEXTURE_DIR").unwrap_or_else(|_| {
+        env!("CARGO_MANIFEST_DIR").to_string()
+    });
     let path = PathBuf::from(dir).join("params.json");
     let text = std::fs::read_to_string(&path).expect("read params.json");
     serde_json::from_str(&text).expect("parse params.json")
 }
 
-fn draw() {
+fn draw_frame() {
     let params = PARAMS.get().expect("params");
     let t = frame_count() as f32 / 60.0;
-    draw_stipple(params, t);
+    draw(params, t);
 }

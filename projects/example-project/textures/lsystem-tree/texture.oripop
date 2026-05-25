@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "id": "lsystem-tree",
+  "title": "L-system fractal branches",
+  "engine_version": "0.1.0",
+  "canvas": {
+    "kind": "provisional",
+    "width": 1024,
+    "height": 1024
+  },
+  "tags": ["lsystem", "line", "example"],
+  "params": "params.json"
+}

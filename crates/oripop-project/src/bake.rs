@@ -6,7 +6,7 @@ use crate::FORMAT_VERSION;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BakeManifest {
     pub format_version: u32,
-    pub design_id: String,
+    pub texture_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     pub created: String,
@@ -45,7 +45,7 @@ pub struct BakeLock {
 
 impl BakeManifest {
     pub fn new(
-        design_id: impl Into<String>,
+        texture_id: impl Into<String>,
         created: impl Into<String>,
         image: impl Into<String>,
         width_px: u32,
@@ -54,7 +54,7 @@ impl BakeManifest {
     ) -> Self {
         Self {
             format_version: FORMAT_VERSION,
-            design_id: design_id.into(),
+            texture_id: texture_id.into(),
             project_id: None,
             created: created.into(),
             image: image.into(),

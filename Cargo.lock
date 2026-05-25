@@ -326,6 +326,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-stipple"
+version = "0.1.0"
+dependencies = [
+ "oripop-canvas",
+ "oripop-runtime",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -676,6 +686,17 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "flowfield-ink"
+version = "0.1.0"
+dependencies = [
+ "oripop-canvas",
+ "oripop-runtime",
+ "rand",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1213,6 +1234,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "lsystem-tree"
+version = "0.1.0"
+dependencies = [
+ "oripop-canvas",
+ "oripop-runtime",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1737,9 +1768,9 @@ dependencies = [
  "eframe",
  "egui-wgpu",
  "image",
+ "libloading",
  "oripop-canvas",
  "oripop-project",
- "oripop-runtime",
  "pollster",
  "serde_json",
  "wgpu",

@@ -5,9 +5,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use oripop_canvas::Params;
-use oripop_project::{BakeLock, BakeManifest, CanvasKind, TextureLibrary};
+use oripop_project::{BakeLock, BakeManifest, CanvasKind, Project};
 
+use crate::cartridge::Cartridge;
 use crate::gpu::PreviewGpu;
 
 pub struct BakeOptions {
@@ -22,17 +22,17 @@ impl Default for BakeOptions {
 }
 
 pub fn bake(
-    library: &TextureLibrary,
-    design_id: &str,
-    params: &Params,
+    project: &Project,
+    texture_id: &str,
+    cartridge: &Cartridge,
     width: u32,
     height: u32,
     gpu: &mut PreviewGpu,
     opts: BakeOptions,
 ) -> io::Result<(PathBuf, PathBuf)> {
-    let rgba = gpu.bake_rgba(params, opts.time, width, height);
+    let rgba = gpu.bake_rgba(cartridge, opts.time, width, height);
 
-    let bakes_dir = library.root.join("bakes").join(design_id);
+    let bakes_dir = project.root.join("bakes").join(texture_id);
     fs::create_dir_all(&bakes_dir)?;
 
     let stamp = timestamp();
@@ -44,7 +44,7 @@ pub fn bake(
     write_png(&png_path, width, height, &rgba)?;
 
     let mut manifest = BakeManifest::new(
-        design_id,
+        texture_id,
         &iso_timestamp(),
         &png_name,
         width,
@@ -54,21 +54,21 @@ pub fn bake(
     manifest.lock = Some(BakeLock {
         frame: Some(opts.frame),
         time:  Some(opts.time),
-        seed:  Some(params.seed),
+        seed:  None,
     });
-    manifest.params_snapshot = Some(serde_json::to_value(params).map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, e)
-    })?);
-    manifest.canvas_kind = canvas_kind_label(library, design_id)?;
+    let params_snapshot: serde_json::Value =
+        serde_json::from_slice(cartridge.params_bytes()).unwrap_or(serde_json::Value::Null);
+    manifest.params_snapshot = Some(params_snapshot);
+    manifest.canvas_kind = canvas_kind_label(project, texture_id)?;
 
     fs::write(&json_path, serde_json::to_string_pretty(&manifest).unwrap())?;
 
     Ok((png_path, json_path))
 }
 
-fn canvas_kind_label(library: &TextureLibrary, design_id: &str) -> io::Result<String> {
-    let (_, design) = library.design(design_id)?;
-    Ok(match design.canvas {
+fn canvas_kind_label(project: &Project, texture_id: &str) -> io::Result<String> {
+    let (_, manifest) = project.texture(texture_id)?;
+    Ok(match manifest.canvas {
         CanvasKind::Provisional { .. } => "provisional".to_string(),
         CanvasKind::PrimitiveUv { .. } => "primitive_uv".to_string(),
         CanvasKind::Atlas { .. }       => "atlas".to_string(),

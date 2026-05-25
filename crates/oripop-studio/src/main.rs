@@ -1,13 +1,13 @@
-//! Ori Pop Studio — texture library shell (GUI + CLI).
+//! Ori Pop Studio — texture project shell (GUI + CLI).
 
 mod app;
 mod bake;
+mod cartridge;
 mod cli;
 mod editor;
 mod engine;
 mod gpu;
 mod paths;
-mod play;
 mod preview;
 mod window;
 

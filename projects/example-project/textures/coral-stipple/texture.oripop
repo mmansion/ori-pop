@@ -9,6 +9,5 @@
     "height": 1024
   },
   "tags": ["stipple", "field", "example"],
-  "params": "params.json",
-  "entry": "main.rs"
+  "params": "params.json"
 }

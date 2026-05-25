@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "id": "flowfield-ink",
+  "title": "Flowfield ink traces",
+  "engine_version": "0.1.0",
+  "canvas": {
+    "kind": "provisional",
+    "width": 1024,
+    "height": 1024
+  },
+  "tags": ["flowfield", "line", "example"],
+  "params": "params.json"
+}
