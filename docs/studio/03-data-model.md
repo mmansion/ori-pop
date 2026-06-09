@@ -73,6 +73,17 @@ into a host-owned buffer. The texture's draw closure runs inside
 [`oripop_canvas::cartridge::dispatch`], which resets the canvas
 thread-local, runs the closure, and emits the resulting frame.
 
+The cdylib must also export the ABI version symbol via
+`oripop_canvas::export_cartridge_abi!();` (one invocation in `lib.rs`). The
+host refuses to load a cartridge whose version differs from its own
+`oripop_canvas::cartridge::CARTRIDGE_ABI_VERSION`.
+
+**Vertex layout (ABI v2):** each vertex is 36 bytes
+(`oripop_canvas::draw::VERTEX_2D_STRIDE`): `[f32; 2]` position at offset 0,
+`[f32; 4]` RGBA at offset 8, `[f32; 2]` UV at offset 24, `f32` texture slot at
+offset 32 (0.0 = solid color, 1.0 = sample the bound 2D texture). ABI v1
+(24-byte position + color vertices) is no longer accepted.
+
 ### 2.1 `texture.oripop`
 
 ```json

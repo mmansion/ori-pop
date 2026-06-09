@@ -30,6 +30,14 @@
 
 use std::cell::RefCell;
 use std::sync::Arc;
+
+use lyon::math::{point as lpt, vector as lvec, Angle, Box2D};
+use lyon::path::{Path, Winding};
+use lyon::tessellation::{
+    BuffersBuilder, FillOptions, FillTessellator, FillVertex, FillVertexConstructor, LineCap,
+    LineJoin, StrokeOptions, StrokeTessellator, StrokeVertex, StrokeVertexConstructor,
+    VertexBuffers,
+};
 use wgpu::util::DeviceExt;
 use winit::{
     application::ApplicationHandler,
@@ -39,14 +47,23 @@ use winit::{
     window::{Window, WindowId},
 };
 
-// ── Vertex ──────────────────────────────────────────────
+// ── Vertex (format v2) ──────────────────────────────────
+//
+// 36 bytes: position, RGBA color, UV, texture slot. Slot 0.0 = solid color;
+// slot 1.0 = multiply by the bound 2D texture (images / glyph atlas /
+// offscreen canvases). See `shader.wgsl`.
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 2],
     color: [f32; 4],
+    uv: [f32; 2],
+    tex: f32,
 }
+
+/// Size in bytes of one 2D vertex as produced by [`take_2d_vertices`].
+pub const VERTEX_2D_STRIDE: usize = std::mem::size_of::<Vertex>();
 
 impl Vertex {
     const LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
@@ -63,8 +80,54 @@ impl Vertex {
                 shader_location: 1,
                 format: wgpu::VertexFormat::Float32x4,
             },
+            wgpu::VertexAttribute {
+                offset: 24,
+                shader_location: 2,
+                format: wgpu::VertexFormat::Float32x2,
+            },
+            wgpu::VertexAttribute {
+                offset: 32,
+                shader_location: 3,
+                format: wgpu::VertexFormat::Float32,
+            },
         ],
     };
+}
+
+/// Builds solid-color vertices for the lyon tessellators.
+struct SolidCtor {
+    color: [f32; 4],
+}
+
+impl FillVertexConstructor<Vertex> for SolidCtor {
+    fn new_vertex(&mut self, v: FillVertex) -> Vertex {
+        Vertex {
+            position: v.position().to_array(),
+            color: self.color,
+            uv: [0.0, 0.0],
+            tex: 0.0,
+        }
+    }
+}
+
+impl StrokeVertexConstructor<Vertex> for SolidCtor {
+    fn new_vertex(&mut self, v: StrokeVertex) -> Vertex {
+        Vertex {
+            position: v.position().to_array(),
+            color: self.color,
+            uv: [0.0, 0.0],
+            tex: 0.0,
+        }
+    }
+}
+
+/// Expand an indexed tessellation result into the flat (non-indexed)
+/// triangle-list vertex stream the 2D pipeline consumes.
+fn append_indexed(out: &mut Vec<Vertex>, buf: &VertexBuffers<Vertex, u32>) {
+    out.reserve(buf.indices.len());
+    for &i in &buf.indices {
+        out.push(buf.vertices[i as usize]);
+    }
 }
 
 #[repr(C)]
@@ -79,13 +142,6 @@ struct Uniforms {
 // y' = m10*x + m11*y + m12
 
 const IDENTITY: [f32; 6] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
-
-fn transform_point(m: &[f32; 6], x: f32, y: f32) -> [f32; 2] {
-    [
-        m[0] * x + m[1] * y + m[2],
-        m[3] * x + m[4] * y + m[5],
-    ]
-}
 
 fn mat_mult(m: &[f32; 6], a: &[f32; 6]) -> [f32; 6] {
     [
@@ -140,6 +196,8 @@ struct Context {
     mouse_pressed: bool,
     key_pressed: bool,
     key_code: char,
+    fill_tess: FillTessellator,
+    stroke_tess: StrokeTessellator,
 }
 
 impl Context {
@@ -161,6 +219,8 @@ impl Context {
             mouse_pressed: false,
             key_pressed: false,
             key_code: '\0',
+            fill_tess: FillTessellator::new(),
+            stroke_tess: StrokeTessellator::new(),
         }
     }
 
@@ -171,8 +231,53 @@ impl Context {
         self.matrix_stack.clear();
     }
 
-    fn transform_pt(&self, x: f32, y: f32) -> [f32; 2] {
-        transform_point(&self.matrix, x, y)
+    /// Apply the current transform to a locally-built path.
+    ///
+    /// Paths are transformed *before* stroking, so stroke weight stays in
+    /// canvas pixels regardless of `scale()` (matching previous behavior).
+    fn apply_transform(&self, path: Path) -> Path {
+        if self.matrix == IDENTITY {
+            return path;
+        }
+        let m = &self.matrix;
+        // euclid Transform2D: x' = m11*x + m21*y + m31, y' = m12*x + m22*y + m32
+        let t = lyon::math::Transform::new(m[0], m[3], m[1], m[4], m[2], m[5]);
+        path.transformed(&t)
+    }
+
+    fn fill_path(&mut self, path: &Path, color: [f32; 4]) {
+        let mut buf: VertexBuffers<Vertex, u32> = VertexBuffers::new();
+        let result = self.fill_tess.tessellate_path(
+            path,
+            &FillOptions::default(),
+            &mut BuffersBuilder::new(&mut buf, SolidCtor { color }),
+        );
+        if result.is_ok() {
+            append_indexed(&mut self.vertices, &buf);
+        }
+    }
+
+    fn stroke_path(&mut self, path: &Path, color: [f32; 4]) {
+        let weight = self.state.stroke_weight;
+        if weight <= 0.0 {
+            return;
+        }
+        // Processing defaults: round caps, miter joins. Exposed as
+        // stroke_cap()/stroke_join() state in a later tier.
+        let options = StrokeOptions::default()
+            .with_line_width(weight)
+            .with_start_cap(LineCap::Round)
+            .with_end_cap(LineCap::Round)
+            .with_line_join(LineJoin::Miter);
+        let mut buf: VertexBuffers<Vertex, u32> = VertexBuffers::new();
+        let result = self.stroke_tess.tessellate_path(
+            path,
+            &options,
+            &mut BuffersBuilder::new(&mut buf, SolidCtor { color }),
+        );
+        if result.is_ok() {
+            append_indexed(&mut self.vertices, &buf);
+        }
     }
 }
 
@@ -369,44 +474,37 @@ pub fn line(x1: f32, y1: f32, x2: f32, y2: f32) {
         if !ctx.state.has_stroke {
             return;
         }
-        let color = ctx.state.stroke_color;
-        let weight = ctx.state.stroke_weight;
-
         let dx = x2 - x1;
         let dy = y2 - y1;
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 0.0001 {
+        if dx * dx + dy * dy < 1e-8 {
             return;
         }
-        let nx = -dy / len * weight * 0.5;
-        let ny = dx / len * weight * 0.5;
-
-        let p0 = [x1 + nx, y1 + ny];
-        let p1 = [x1 - nx, y1 - ny];
-        let p2 = [x2 + nx, y2 + ny];
-        let p3 = [x2 - nx, y2 - ny];
-
-        ctx.vertices.extend_from_slice(&[
-            Vertex { position: p0, color },
-            Vertex { position: p1, color },
-            Vertex { position: p2, color },
-            Vertex { position: p1, color },
-            Vertex { position: p3, color },
-            Vertex { position: p2, color },
-        ]);
+        let mut b = Path::builder();
+        b.begin(lpt(x1, y1));
+        b.line_to(lpt(x2, y2));
+        b.end(false);
+        let path = ctx.apply_transform(b.build());
+        let color = ctx.state.stroke_color;
+        ctx.stroke_path(&path, color);
     });
 }
 
-/// Draw a single point at (`x`, `y`) as a small filled square whose size
-/// equals the current stroke weight.
+/// Draw a single point at (`x`, `y`) as a filled dot whose diameter equals
+/// the current stroke weight.
 pub fn point(x: f32, y: f32) {
     with_ctx(|ctx| {
         if !ctx.state.has_stroke {
             return;
         }
-        let color = ctx.state.stroke_color;
         let half = ctx.state.stroke_weight * 0.5;
-        push_filled_rect(ctx, x - half, y - half, ctx.state.stroke_weight, ctx.state.stroke_weight, color);
+        if half <= 0.0 {
+            return;
+        }
+        let mut b = Path::builder();
+        b.add_circle(lpt(x, y), half, Winding::Positive);
+        let path = ctx.apply_transform(b.build());
+        let color = ctx.state.stroke_color;
+        ctx.fill_path(&path, color);
     });
 }
 
@@ -414,16 +512,19 @@ pub fn point(x: f32, y: f32) {
 /// width and height. Respects current fill and stroke settings.
 pub fn rect(x: f32, y: f32, w: f32, h: f32) {
     with_ctx(|ctx| {
+        let mut b = Path::builder();
+        b.add_rectangle(
+            &Box2D::new(lpt(x, y), lpt(x + w, y + h)),
+            Winding::Positive,
+        );
+        let path = ctx.apply_transform(b.build());
         if ctx.state.has_fill {
-            push_filled_rect(ctx, x, y, w, h, ctx.state.fill_color);
+            let color = ctx.state.fill_color;
+            ctx.fill_path(&path, color);
         }
         if ctx.state.has_stroke {
             let color = ctx.state.stroke_color;
-            let sw = ctx.state.stroke_weight;
-            push_line(ctx, x, y, x + w, y, sw, color);
-            push_line(ctx, x + w, y, x + w, y + h, sw, color);
-            push_line(ctx, x + w, y + h, x, y + h, sw, color);
-            push_line(ctx, x, y + h, x, y, sw, color);
+            ctx.stroke_path(&path, color);
         }
     });
 }
@@ -431,42 +532,24 @@ pub fn rect(x: f32, y: f32, w: f32, h: f32) {
 /// Draw an ellipse bounded by the rectangle at (`x`, `y`) with the given
 /// width and height. Respects current fill and stroke settings.
 pub fn ellipse(x: f32, y: f32, w: f32, h: f32) {
-    const SEGMENTS: usize = 64;
     with_ctx(|ctx| {
         let rx = w * 0.5;
         let ry = h * 0.5;
-        let cx = x + rx;
-        let cy = y + ry;
-
+        let mut b = Path::builder();
+        b.add_ellipse(
+            lpt(x + rx, y + ry),
+            lvec(rx, ry),
+            Angle::radians(0.0),
+            Winding::Positive,
+        );
+        let path = ctx.apply_transform(b.build());
         if ctx.state.has_fill {
             let color = ctx.state.fill_color;
-            let step = std::f32::consts::TAU / SEGMENTS as f32;
-            let center = ctx.transform_pt(cx, cy);
-            for i in 0..SEGMENTS {
-                let a0 = step * i as f32;
-                let a1 = step * (i + 1) as f32;
-                let p0 = ctx.transform_pt(cx + rx * a0.cos(), cy + ry * a0.sin());
-                let p1 = ctx.transform_pt(cx + rx * a1.cos(), cy + ry * a1.sin());
-                ctx.vertices.extend_from_slice(&[
-                    Vertex { position: center, color },
-                    Vertex { position: p0, color },
-                    Vertex { position: p1, color },
-                ]);
-            }
+            ctx.fill_path(&path, color);
         }
         if ctx.state.has_stroke {
             let color = ctx.state.stroke_color;
-            let sw = ctx.state.stroke_weight;
-            let step = std::f32::consts::TAU / SEGMENTS as f32;
-            for i in 0..SEGMENTS {
-                let a0 = step * i as f32;
-                let a1 = step * (i + 1) as f32;
-                let x0 = cx + rx * a0.cos();
-                let y0 = cy + ry * a0.sin();
-                let x1 = cx + rx * a1.cos();
-                let y1 = cy + ry * a1.sin();
-                push_line(ctx, x0, y0, x1, y1, sw, color);
-            }
+            ctx.stroke_path(&path, color);
         }
     });
 }
@@ -475,65 +558,21 @@ pub fn ellipse(x: f32, y: f32, w: f32, h: f32) {
 /// Respects current fill and stroke settings.
 pub fn triangle(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
     with_ctx(|ctx| {
+        let mut b = Path::builder();
+        b.begin(lpt(x1, y1));
+        b.line_to(lpt(x2, y2));
+        b.line_to(lpt(x3, y3));
+        b.close();
+        let path = ctx.apply_transform(b.build());
         if ctx.state.has_fill {
             let color = ctx.state.fill_color;
-            let p1 = ctx.transform_pt(x1, y1);
-            let p2 = ctx.transform_pt(x2, y2);
-            let p3 = ctx.transform_pt(x3, y3);
-            ctx.vertices.extend_from_slice(&[
-                Vertex { position: p1, color },
-                Vertex { position: p2, color },
-                Vertex { position: p3, color },
-            ]);
+            ctx.fill_path(&path, color);
         }
         if ctx.state.has_stroke {
             let color = ctx.state.stroke_color;
-            let sw = ctx.state.stroke_weight;
-            push_line(ctx, x1, y1, x2, y2, sw, color);
-            push_line(ctx, x2, y2, x3, y3, sw, color);
-            push_line(ctx, x3, y3, x1, y1, sw, color);
+            ctx.stroke_path(&path, color);
         }
     });
-}
-
-fn push_filled_rect(ctx: &mut Context, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-    let tl = ctx.transform_pt(x, y);
-    let tr = ctx.transform_pt(x + w, y);
-    let br = ctx.transform_pt(x + w, y + h);
-    let bl = ctx.transform_pt(x, y + h);
-    ctx.vertices.extend_from_slice(&[
-        Vertex { position: tl, color },
-        Vertex { position: tr, color },
-        Vertex { position: br, color },
-        Vertex { position: tl, color },
-        Vertex { position: br, color },
-        Vertex { position: bl, color },
-    ]);
-}
-
-fn push_line(ctx: &mut Context, x1: f32, y1: f32, x2: f32, y2: f32, weight: f32, color: [f32; 4]) {
-    let [x1, y1] = ctx.transform_pt(x1, y1);
-    let [x2, y2] = ctx.transform_pt(x2, y2);
-    let dx = x2 - x1;
-    let dy = y2 - y1;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < 0.0001 {
-        return;
-    }
-    let nx = -dy / len * weight * 0.5;
-    let ny = dx / len * weight * 0.5;
-    let p0 = [x1 + nx, y1 + ny];
-    let p1 = [x1 - nx, y1 - ny];
-    let p2 = [x2 + nx, y2 + ny];
-    let p3 = [x2 - nx, y2 - ny];
-    ctx.vertices.extend_from_slice(&[
-        Vertex { position: p0, color },
-        Vertex { position: p1, color },
-        Vertex { position: p2, color },
-        Vertex { position: p1, color },
-        Vertex { position: p3, color },
-        Vertex { position: p2, color },
-    ]);
 }
 
 // ── GPU ─────────────────────────────────────────────────
@@ -731,25 +770,27 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("oripop bind group layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
+        entries: &bind_group_layout_entries_2d(),
     });
 
+    let (white_view, sampler) = create_white_texture_2d(&device, &queue);
     let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("oripop bind group"),
         layout: &bind_group_layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: uniform_buffer.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&white_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -849,6 +890,84 @@ pub fn vertex_2d_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
     Vertex::LAYOUT
 }
 
+/// Bind group layout entries for the 2D pipeline (`shader.wgsl`):
+/// binding 0 = uniforms (vertex), binding 1 = 2D texture (fragment),
+/// binding 2 = sampler (fragment). Hosts embedding the 2D pipeline
+/// (oripop-3d overlay, studio preview/bake) must use this exact layout.
+pub fn bind_group_layout_entries_2d() -> [wgpu::BindGroupLayoutEntry; 3] {
+    [
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ]
+}
+
+/// Create the default 1x1 white texture + linear sampler bound at
+/// bindings 1 and 2 when no image/atlas is in use. Solid-color vertices
+/// (texture slot 0.0) bypass the sample in the shader, so this is purely
+/// a placeholder to satisfy the layout.
+pub fn create_white_texture_2d(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::TextureView, wgpu::Sampler) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("oripop 2d white"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[255u8; 4],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("oripop 2d sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    (view, sampler)
+}
+
 /// Read the configured window settings without starting the event loop.
 /// Returns `(width, height, title, msaa_samples)`.
 pub fn settings() -> (u32, u32, String, u32) {
@@ -864,8 +983,9 @@ pub fn begin_frame() {
 /// Drain the accumulated 2D draw data for this frame.
 ///
 /// Returns the background clear colour and raw vertex bytes.
-/// Each vertex is 24 bytes: `[f32; 2]` position at offset 0,
-/// `[f32; 4]` RGBA colour at offset 8.
+/// Each vertex is [`VERTEX_2D_STRIDE`] (36) bytes: `[f32; 2]` position at
+/// offset 0, `[f32; 4]` RGBA colour at offset 8, `[f32; 2]` UV at offset 24,
+/// `f32` texture slot at offset 32.
 pub fn take_2d_vertices() -> (wgpu::Color, Vec<u8>) {
     with_ctx(|ctx| {
         let bg    = ctx.bg;

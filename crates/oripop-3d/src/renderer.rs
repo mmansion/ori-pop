@@ -130,7 +130,7 @@ pub(crate) struct Renderer {
 
 const MAX_OBJECTS:    u64 = 256;
 const GEN_TEX_SIZE:   u32 = 512;
-const VERTEX_2D_STRIDE: u32 = 24; // [f32;2] position + [f32;4] color
+const VERTEX_2D_STRIDE: u32 = oripop_canvas::draw::VERTEX_2D_STRIDE as u32;
 
 fn depth_format() -> wgpu::TextureFormat { wgpu::TextureFormat::Depth32Float }
 
@@ -512,25 +512,28 @@ impl Renderer {
 
         let uniform_2d_bg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label:   Some("2d bg layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding:    0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty:         wgpu::BindingType::Buffer {
-                    ty:                 wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size:   None,
-                },
-                count: None,
-            }],
+            entries: &oripop_canvas::draw::bind_group_layout_entries_2d(),
         });
 
+        let (white_2d_view, sampler_2d) =
+            oripop_canvas::draw::create_white_texture_2d(&device, &queue);
         let uniform_2d_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("2d bg"),
             layout:  &uniform_2d_bg_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding:  0,
-                resource: uniform_2d_buf.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding:  0,
+                    resource: uniform_2d_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding:  1,
+                    resource: wgpu::BindingResource::TextureView(&white_2d_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding:  2,
+                    resource: wgpu::BindingResource::Sampler(&sampler_2d),
+                },
+            ],
         });
 
         let pipeline_2d_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

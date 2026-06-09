@@ -15,6 +15,33 @@ use std::os::raw::c_void;
 
 use crate::draw::{begin_frame, take_2d_vertices};
 
+/// Version of the cartridge ABI: the emit-callback signature **and** the
+/// vertex byte layout it carries (see [`crate::draw::VERTEX_2D_STRIDE`]).
+///
+/// v1 — 24-byte vertices (position + color).
+/// v2 — 36-byte vertices (position + color + uv + texture slot).
+///
+/// Textures export this via [`crate::export_cartridge_abi!`]; the studio
+/// host refuses to load a cartridge whose version does not match.
+pub const CARTRIDGE_ABI_VERSION: u32 = 2;
+
+/// Export the cartridge ABI version symbol from a texture cdylib.
+///
+/// Place one invocation in the texture's `lib.rs`:
+///
+/// ```ignore
+/// oripop_canvas::export_cartridge_abi!();
+/// ```
+#[macro_export]
+macro_rules! export_cartridge_abi {
+    () => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn oripop_texture_abi_version() -> u32 {
+            $crate::cartridge::CARTRIDGE_ABI_VERSION
+        }
+    };
+}
+
 /// Signature of the emit callback that the host (`oripop-studio`) passes in.
 ///
 /// The callback must finish copying the data before returning; the bytes
@@ -30,6 +57,10 @@ pub type EmitFn = unsafe extern "C" fn(
 );
 
 /// Run the texture's draw closure and emit the captured frame to the host.
+///
+/// `emit_ctx` is never dereferenced here; it is an opaque host pointer passed
+/// straight back to the host-supplied `emit` callback.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn dispatch<F: FnOnce()>(emit: EmitFn, emit_ctx: *mut c_void, draw: F) {
     begin_frame();
     draw();

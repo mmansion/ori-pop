@@ -38,6 +38,8 @@ type EmitFn = unsafe extern "C" fn(
 
 type RenderFn = unsafe extern "C" fn(f32, *const u8, usize, EmitFn, *mut c_void);
 
+type AbiVersionFn = unsafe extern "C" fn() -> u32;
+
 /// One emitted frame: background color + 2D vertex bytes (xyzrgba layout).
 pub struct Frame {
     pub bg:        wgpu::Color,
@@ -71,6 +73,26 @@ impl Cartridge {
         let lib_path = build_texture(workspace_root, texture_id)?;
         let staged = stage_copy(workspace_root, texture_id, &lib_path)?;
         let library = unsafe { Library::new(&staged) }.map_err(load_err)?;
+
+        // Refuse cartridges whose emitted vertex layout does not match ours.
+        let expected = oripop_canvas::cartridge::CARTRIDGE_ABI_VERSION;
+        let abi = unsafe {
+            library
+                .get::<AbiVersionFn>(b"oripop_texture_abi_version")
+                .map(|sym| sym())
+                .unwrap_or(1) // symbol predates versioning => ABI v1
+        };
+        if abi != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "texture '{texture_id}' uses cartridge ABI v{abi}, host expects v{expected}; \
+                     rebuild the texture against the current oripop-canvas \
+                     (and add `oripop_canvas::export_cartridge_abi!();` to its lib.rs)"
+                ),
+            ));
+        }
+
         let render_addr = unsafe {
             let sym: Symbol<RenderFn> =
                 library.get(b"oripop_texture_render").map_err(load_err)?;

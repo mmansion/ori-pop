@@ -5,6 +5,8 @@ use std::os::raw::c_void;
 use oripop_canvas::cartridge::{dispatch, EmitFn};
 use oripop_canvas::prelude::*;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
+
+oripop_canvas::export_cartridge_abi!();
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -33,6 +35,7 @@ pub struct Canvas {
 /// # Safety
 /// `params_ptr`/`params_len` must describe a valid UTF-8 buffer for the
 /// lifetime of this call. `emit` must remain valid until it returns.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
 pub extern "C" fn oripop_texture_render(
     t:          f32,

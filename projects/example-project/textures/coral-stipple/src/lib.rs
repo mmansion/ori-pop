@@ -9,6 +9,8 @@ use oripop_canvas::cartridge::{dispatch, EmitFn};
 use oripop_canvas::prelude::*;
 use oripop_canvas::{generate_dots, Params};
 
+oripop_canvas::export_cartridge_abi!();
+
 /// Studio entry point. Reads params from a JSON byte slice and emits the
 /// resulting frame (background + tessellated vertices) to the host through
 /// `emit`.
@@ -16,6 +18,7 @@ use oripop_canvas::{generate_dots, Params};
 /// # Safety
 /// `params_ptr`/`params_len` must describe a valid UTF-8 buffer for the
 /// lifetime of this call. `emit` must remain valid until it returns.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[unsafe(no_mangle)]
 pub extern "C" fn oripop_texture_render(
     t:          f32,

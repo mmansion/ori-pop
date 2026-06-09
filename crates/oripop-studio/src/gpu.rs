@@ -4,18 +4,18 @@
 //! `Rgba8UnormSrgb` texture, then hands the texture to egui for display.
 //! Bake reuses the same pipeline and reads the texture back into RGBA8 pixels.
 
-use std::num::NonZeroU64;
-
 use bytemuck::{Pod, Zeroable};
 use eframe::egui;
-use oripop_canvas::draw::{vertex_2d_buffer_layout, SHADER_2D_WGSL};
+use oripop_canvas::draw::{
+    bind_group_layout_entries_2d, create_white_texture_2d, vertex_2d_buffer_layout,
+    SHADER_2D_WGSL, VERTEX_2D_STRIDE,
+};
 
 use crate::cartridge::Cartridge;
 
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const MSAA_SAMPLES:  u32 = 4;
 const COPY_ALIGN:    u32 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-const VERTEX_STRIDE: usize = 24;
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -30,6 +30,8 @@ pub struct PreviewGpu {
     egui:           Option<egui_wgpu::RenderState>,
     pipeline:       wgpu::RenderPipeline,
     layout:         wgpu::BindGroupLayout,
+    white_view:     wgpu::TextureView,
+    sampler:        wgpu::Sampler,
     vertex_buf:     Option<wgpu::Buffer>,
     vertex_buf_cap: u64,
     target:         Option<PreviewTarget>,
@@ -47,12 +49,15 @@ struct PreviewTarget {
 impl PreviewGpu {
     pub fn new(rs: &egui_wgpu::RenderState) -> Self {
         let (pipeline, layout) = build_pipeline(&rs.device);
+        let (white_view, sampler) = create_white_texture_2d(&rs.device, &rs.queue);
         Self {
             device: rs.device.clone(),
             queue: rs.queue.clone(),
             egui: Some(rs.clone()),
             pipeline,
             layout,
+            white_view,
+            sampler,
             vertex_buf: None,
             vertex_buf_cap: 0,
             target: None,
@@ -80,12 +85,15 @@ impl PreviewGpu {
         }))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
         let (pipeline, layout) = build_pipeline(&device);
+        let (white_view, sampler) = create_white_texture_2d(&device, &queue);
         Ok(Self {
             device,
             queue,
             egui: None,
             pipeline,
             layout,
+            white_view,
+            sampler,
             vertex_buf: None,
             vertex_buf_cap: 0,
             target: None,
@@ -143,7 +151,14 @@ impl PreviewGpu {
             msaa_view,
             uniform,
             bind_group,
-        } = create_render_targets(&self.device, &self.layout, width, height);
+        } = create_render_targets(
+            &self.device,
+            &self.layout,
+            &self.white_view,
+            &self.sampler,
+            width,
+            height,
+        );
         self.queue.write_buffer(
             &uniform,
             0,
@@ -241,7 +256,14 @@ impl PreviewGpu {
             msaa_view,
             uniform,
             bind_group,
-        } = create_render_targets(&self.device, &self.layout, width, height);
+        } = create_render_targets(
+            &self.device,
+            &self.layout,
+            &self.white_view,
+            &self.sampler,
+            width,
+            height,
+        );
         self.queue.write_buffer(
             &uniform,
             0,
@@ -328,7 +350,7 @@ fn encode_render(
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
                 pass.set_vertex_buffer(0, vb.slice(..));
-                let vertex_count = (vertex_bytes_len / VERTEX_STRIDE) as u32;
+                let vertex_count = (vertex_bytes_len / VERTEX_2D_STRIDE) as u32;
                 pass.draw(0..vertex_count, 0..1);
             }
         }
@@ -344,16 +366,7 @@ fn build_pipeline(device: &wgpu::Device) -> (wgpu::RenderPipeline, wgpu::BindGro
 
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label:   Some("oripop-studio bind group layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding:    0,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty:         wgpu::BindingType::Buffer {
-                ty:                 wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size:   Some(NonZeroU64::new(16).unwrap()),
-            },
-            count:      None,
-        }],
+        entries: &bind_group_layout_entries_2d(),
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -414,6 +427,8 @@ struct RenderTargets {
 fn create_render_targets(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
+    white_view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
     width: u32,
     height: u32,
 ) -> RenderTargets {
@@ -460,10 +475,20 @@ fn create_render_targets(
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:   Some("oripop-studio bind group"),
         layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding:  0,
-            resource: uniform.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding:  0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding:  1,
+                resource: wgpu::BindingResource::TextureView(white_view),
+            },
+            wgpu::BindGroupEntry {
+                binding:  2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
     });
 
     RenderTargets {
