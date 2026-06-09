@@ -138,6 +138,30 @@ Full detail and first tasks: [`docs/studio/04-roadmap.md`](docs/studio/04-roadma
 
 ---
 
+## 0d. `oripop-canvas` — Full Creative-Coding Surface
+
+**Status: planned (tiers locked 2026-06-10)**
+
+The dot/stipple engines are one aesthetic, not the platform identity. To leave
+room for artistic growth, `oripop-canvas` grows to the full user-facing surface
+of Processing / p5.js / openFrameworks, in Rust-idiomatic snake_case. 2D remains
+**a plane in 3D space** (§0): the canvas authors geometry and textures that feed
+the one frame graph. There is deliberately **no P3D-style camera/lighting in the
+canvas API** — 3D belongs to `oripop-3d`.
+
+| Tier | Scope |
+|------|-------|
+| **0 — enablers** | `lyon` path tessellation replaces the hand-rolled tessellation in `draw.rs`; vertex format v2 (pos + rgba + uv + texture slot); cartridge ABI / `Frame` payload versioned in lockstep (studio rasterizer updates together); offscreen canvases (`create_graphics`) via render-to-texture (pattern proven by studio `PreviewGpu`) |
+| **1 — core parity** | `arc` / `quad` / `circle` / `square` / `bezier` / `curve`; `begin_shape` / `vertex` / `curve_vertex` / `bezier_vertex` / `end_shape` + contours; `rect_mode` / `ellipse_mode` / `angle_mode` / `stroke_cap` / `stroke_join`; `Color` type, HSB mode, `lerp_color`; `map` / `lerp` / `dist` / `constrain` / `norm`; seeded `random`, `random_gaussian`, Perlin/simplex `noise`; `pmouse_*`, mouse buttons, wheel, `millis`, frame-rate control |
+| **2 — text & images** | Glyph-atlas typography (`cosmic-text` / `ab_glyph`): `text`, `text_size`, `text_align`, `text_width`; images (`image` crate): `load_image`, `image`, `tint`, `image_mode`, pixel access |
+| **3 — GPU / advanced** | `blend_mode` pipeline variants; clip/mask; compute-pass filters (blur, threshold); custom WGSL shader hook (PShader equivalent — dovetails with the scripting-node vision in `PHILOSOPHY.md`) |
+
+Tier 0 is the most leveraged change in the workspace: it touches the same vertex
+path that the cartridge ABI and studio rasterizer depend on, and should land
+before more textures accumulate against the current 24-byte vertex format.
+
+---
+
 ## 1. Coordinate System — Z-Up Right-Handed
 
 **Status: done**
@@ -449,6 +473,135 @@ Bridges generative models to physical manufacturing.
   - **USD** — future target when Rust bindings mature (NVIDIA Omniverse native).
 
 Depends on: `oripop-math`, `oripop-geo`.
+
+---
+
+## 10. Unified Design-to-Fabrication Platform
+
+**Status: strategy locked 2026-06-10**
+
+ori-pop is the **single platform** for the full sculpture pipeline — model,
+generate, simulate, plan, and run the machine — for one specific vertical:
+**self-shaping tensile sculptures** fabricated on a custom dual-station gantry.
+"One platform" means **one source of truth and one orchestrating process**, not
+one codebase: heavy engines are borrowed behind file/protocol boundaries.
+
+### The process
+
+A custom cartesian gantry (off-the-shelf CNC motion parts) over a custom bed
+that elastic fabric is stretched onto:
+
+1. An **XY plotter station** draws ink and/or lays conductive traces
+   (direct ink writing) on the stretched fabric.
+2. A **pellet extruder station** (Massive Dimension class) prints rigid
+   "bones" / patterns over it, minimal Z.
+3. The fabric is cut into developable strips and **released**; differential
+   contraction between printed and bare regions self-shapes each strip.
+   Strips are joined with hardware into tensile sculptures, with LED features
+   powered through the printed / routed wiring.
+
+This is the **self-shaping / 4D-textiles** technique (Kycia, TU Berlin 2021;
+Nervous System; INRIA pre-stretched meta-materials; PixBric, TEI '26): released
+curvature is programmed by print density, pattern topology, bead thickness, and
+pre-stretch ratio — exactly the quantities ori-pop's `f(u, v)` fields modulate.
+**The generative pattern is the curvature program.** Pattern and form are one
+authored object — the strongest form of "surface and pattern share a coordinate
+system" (`PHILOSOPHY.md`).
+
+### Decisions
+
+1. **Source of truth: the `DesignTree`** (RON/JSON, in git) — never OpenUSD.
+   USD cannot represent parametric intent; it describes composed scenes. USD
+   and glTF are **publication targets** (§9): path-traced previz, composition
+   into scanned client spaces. glTF + `extras.oripop` remains the lossless
+   interchange.
+2. **Everything imports INTO ori-pop.** One process, one render loop (§0).
+   The machine rig, simulation results, and live telemetry are scene content
+   in `oripop-3d`. No Omniverse host; no Isaac Sim (gantry FK is trivial
+   in-house).
+3. **Simulation is in-house GPU PBD/XPBD** (`oripop-physics`, §7), specced as:
+   stretched fabric + UV-field-painted rib stiffness + release → settled form.
+   "Kangaroo-class" form-finding quality, empirically calibrated against
+   physical test coupons; cross-validated occasionally against standalone
+   Newton (pip package — no Omniverse required). Inverse design (target form →
+   print pattern) is a later `oripop-evo` direction; Newton's differentiability
+   is a candidate engine for it.
+4. **The machine is a DesignTree citizen.** A serializable `MachineDescription`
+   in `oripop-math`: dual-station gantry kinematics, work envelope, tool
+   definitions (pen / DIW head / pellet extruder TCPs), fabric and material
+   parameters (pre-stretch ratio, per-pass stretch state), control interface.
+   Consumed by simulation, toolpath generation, post-processing, and the
+   studio cockpit. Station registration via shared `Frame` datums; toolpaths
+   are authored in **released-UV space** and transformed to **stretched bed
+   space** for fabrication.
+5. **Control stack, two tracks.** Bring-up: proven firmware (grblHAL / Klipper)
+   on the MCU; the studio cockpit streams G-code and renders telemetry on the
+   rig. Custom track: Rust firmware based on an existing open-source project
+   (candidate: Printhor — Embassy-based, MIT, S-curve planner), with a shared
+   `no_std` motion/protocol crate compiled into **both** cockpit and firmware
+   (no protocol drift). Hard realtime — step timing, endstops, e-stop — never
+   leaves firmware.
+6. **Electronics are DesignTree citizens and fabrication outputs.** `WirePath`
+   (UV-space curve, fabricated as a DIW plotter toolpath, routed along bones /
+   low-curvature channels; seam continuity shared with cut-line constraints,
+   studio Phase 4), `Emitter` (LED point/strip), `Connector` (at hardware
+   joins), `PowerBudget`. Arc lengths in the tree make wire length and voltage
+   drop computable constraints. LED animation = the same `f(u, v, t)` field
+   sampled at emitter positions — one generative core drives pigment and light.
+   Previz: emissive + bloom in `oripop-3d` live; USD/.glb to a path tracer for
+   glow-through-fabric renders.
+7. **Toolpath generation skips slicing.** Minimal-Z printing on flat stretched
+   fabric means 2.5D bead paths generated **directly from UV fields** in
+   `oripop-fab` — no mesh→slicer round trip. Pellet extruders prefer continuous
+   extrusion, so the path generator optimizes for long connected paths (which
+   suits generative line work).
+8. **External tools, shrunken roles.** Rhino/Grasshopper: v0 unroll authority
+   only (§0c), shrinking as `oripop-math` grows the surface families actually
+   used. Newton: solver validation. Blender / Omniverse RTX: optional final
+   renders and site composition (NuRec scans of client spaces arrive as USD).
+   Isaac Sim: dropped.
+
+### 2026 platform note
+
+NVIDIA deprecated the Omniverse Launcher (Oct 2025); the prebuilt end-user apps
+are now developer templates (`kit-app-template`). The platform consolidated
+around the Kit SDK and open-source Isaac Sim. **Newton** (Disney Research +
+Google DeepMind + NVIDIA) is a standalone, differentiable, GPU-accelerated
+physics engine installable via pip — relevant to ori-pop as a validation and
+future optimization engine, with **no Omniverse dependency**.
+
+### Phasing
+
+1. **Self-shaping sim spike** — GPU PBD in `oripop-physics` (§7): cloth as
+   distance + bending constraints, rib regions painted by a UV field,
+   pre-stretch → release → settle, rendered live in `oripop-3d`.
+2. **`MachineDescription` + rig** — type in `oripop-math`; gantry rendered and
+   FK-animated in `oripop-3d`; dry-run toolpath playback with envelope checks.
+3. **Toolpaths + post-processor** (`oripop-fab`) — UV-field → plotter paths
+   (pen/DIW) and continuous-bead extrusion paths; released↔stretched
+   transform; station registration; G-code post-processor (grbl/Klipper
+   dialect first).
+4. **Cockpit** — studio job runner: stream to bring-up controller, live
+   commanded-vs-actual telemetry rendered on the rig (the "fabrication status
+   monitor" of `PHILOSOPHY.md`).
+5. **Custom Rust firmware track** — evaluate Printhor; design the shared
+   `no_std` protocol crate (e.g. `postcard`); migrate when motion quality is
+   proven.
+6. **Electronics + publication** — `WirePath` / `Emitter` / `Connector` /
+   `PowerBudget` nodes; DIW trace toolpaths through the same machinery;
+   `.glb`/USD publication for path-traced previz and site composition.
+
+The `oripop-canvas` parity workstream (§0d) runs in parallel — every primitive
+it gains immediately becomes fabricatable line work for the plotter and
+extruder.
+
+### Non-goals
+
+- No Isaac Sim, no Kit app, no Omniverse host integration
+- No USD as design storage — DesignTree only
+- No homegrown step generation before the firmware track matures
+- No certified-accuracy FEA — form-finding quality, empirically calibrated
+- No general CAD or slicer ambitions — this vertical only
 
 ---
 

@@ -270,9 +270,20 @@ This makes every ori-pop export simultaneously:
 - A complete, recoverable parametric design
 - An input to NVIDIA Omniverse, AI generative tools, and spatial computing (XR)
 
-USD (Universal Scene Description, NVIDIA Omniverse's format) is a future export
-target. The Rust ecosystem for USD is not yet mature; glTF provides equivalent
-interoperability today with excellent tooling.
+USD (Universal Scene Description) is a **publication target, never design
+storage**. The `DesignTree` is the source of truth; USD describes composed
+scenes, not parametric intent. Where USD earns its place is downstream:
+path-traced light previz and **site composition** — referencing a sculpture
+into a scanned client space (NVIDIA NuRec produces USD environments from
+sensor data) to previsualize a system in situ.
+
+A 2026 platform note: NVIDIA's Omniverse is no longer a suite of end-user
+apps (the Launcher was deprecated in 2025) but a developer SDK plus the
+open-source Isaac Sim. The piece most relevant to ori-pop is **Newton** —
+a standalone, differentiable, GPU-accelerated physics engine (Disney
+Research + Google DeepMind + NVIDIA, pip-installable, no Omniverse
+dependency) — useful for validating ori-pop's own form-finding solver and,
+eventually, gradient-based inverse design.
 
 ---
 
@@ -300,4 +311,4 @@ a system that makes the specific things you want to make feel inevitable.
 
 ---
 
-*Last updated: 2026-04-12*
+*Last updated: 2026-06-10*
