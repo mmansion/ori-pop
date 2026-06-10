@@ -23,6 +23,7 @@ pub mod bezier;
 pub mod cartridge;
 pub mod draw;
 pub mod field;
+pub mod graphics;
 pub mod line;
 pub mod point;
 pub mod prelude;

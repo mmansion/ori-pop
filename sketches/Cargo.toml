@@ -52,3 +52,7 @@ path = "10-curves-3d-demo.rs"
 [[bin]]
 name = "11-distribution-dial-demo"
 path = "11-distribution-dial-demo.rs"
+
+[[bin]]
+name = "12-graphics-demo"
+path = "12-graphics-demo.rs"

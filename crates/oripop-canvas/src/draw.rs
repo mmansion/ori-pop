@@ -55,7 +55,7 @@ use winit::{
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
+pub(crate) struct Vertex {
     position: [f32; 2],
     color: [f32; 4],
     uv: [f32; 2],
@@ -130,6 +130,39 @@ fn append_indexed(out: &mut Vec<Vertex>, buf: &VertexBuffers<Vertex, u32>) {
     }
 }
 
+// ── Frame data (draw runs) ──────────────────────────────
+//
+// A frame is no longer one flat vertex stream: it is a stream plus a list of
+// contiguous *runs*, each bound to one texture. Run `tex == 0` is solid
+// geometry (white placeholder texture); other values reference an offscreen
+// [`crate::graphics::Graphics`] canvas rendered earlier in the frame.
+
+/// A contiguous range of vertices drawn with a single texture binding.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct DrawRun {
+    /// 0 = solid color; otherwise a `Graphics` id.
+    pub tex: u64,
+    pub start: u32,
+    pub count: u32,
+}
+
+/// Recorded content of one offscreen `Graphics` canvas for this frame.
+pub(crate) struct GraphicsFrame {
+    pub id: u64,
+    pub width: u32,
+    pub height: u32,
+    pub bg: wgpu::Color,
+    pub vertices: Vec<Vertex>,
+}
+
+/// Everything the windowed host needs to render one frame.
+pub(crate) struct Frame2D {
+    pub bg: wgpu::Color,
+    pub vertices: Vec<Vertex>,
+    pub runs: Vec<DrawRun>,
+    pub graphics: Vec<GraphicsFrame>,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
@@ -176,59 +209,128 @@ impl Default for DrawState {
     }
 }
 
-// ── Context ─────────────────────────────────────────────
+// ── Recorder ────────────────────────────────────────────
+//
+// The drawing surface: draw state, transform stack, tessellators, and the
+// recorded vertex stream + draw runs. The main canvas owns one (inside the
+// thread-local `Context`); each offscreen `Graphics` owns its own.
 
-struct Context {
-    width: u32,
-    height: u32,
-    title: String,
-    msaa_samples: u32,
-    /// When false, the event loop does not spin at max FPS; redraws are requested from input and resize only.
-    continuous_redraw: bool,
+pub(crate) struct Recorder {
     state: DrawState,
-    vertices: Vec<Vertex>,
-    bg: wgpu::Color,
-    frame_count: u64,
+    pub(crate) vertices: Vec<Vertex>,
+    pub(crate) runs: Vec<DrawRun>,
+    pub(crate) bg: wgpu::Color,
     matrix: [f32; 6],
     matrix_stack: Vec<[f32; 6]>,
-    mouse_x: f32,
-    mouse_y: f32,
-    mouse_pressed: bool,
-    key_pressed: bool,
-    key_code: char,
     fill_tess: FillTessellator,
     stroke_tess: StrokeTessellator,
 }
 
-impl Context {
-    fn new() -> Self {
+impl Recorder {
+    pub(crate) fn new() -> Self {
         Self {
-            width: 400,
-            height: 400,
-            title: String::from("ori-pop"),
-            msaa_samples: 4,
-            continuous_redraw: true,
             state: DrawState::default(),
             vertices: Vec::new(),
+            runs: Vec::new(),
             bg: wgpu::Color::BLACK,
-            frame_count: 0,
             matrix: IDENTITY,
             matrix_stack: Vec::new(),
-            mouse_x: 0.0,
-            mouse_y: 0.0,
-            mouse_pressed: false,
-            key_pressed: false,
-            key_code: '\0',
             fill_tess: FillTessellator::new(),
             stroke_tess: StrokeTessellator::new(),
         }
     }
 
-    fn reset_frame(&mut self) {
+    /// Discard recorded geometry (used by `Graphics::background` and the
+    /// per-frame reset). Draw state (colors, weight) persists.
+    pub(crate) fn clear(&mut self) {
         self.vertices.clear();
-        self.frame_count += 1;
+        self.runs.clear();
+    }
+
+    /// Per-frame reset: clear geometry and the transform stack.
+    pub(crate) fn reset(&mut self) {
+        self.clear();
         self.matrix = IDENTITY;
         self.matrix_stack.clear();
+    }
+
+    // ── state setters ──
+
+    pub(crate) fn set_background_a(&mut self, r: u8, g: u8, b: u8, a: u8) {
+        self.bg = wgpu::Color {
+            r: r as f64 / 255.0,
+            g: g as f64 / 255.0,
+            b: b as f64 / 255.0,
+            a: a as f64 / 255.0,
+        };
+    }
+
+    pub(crate) fn set_stroke_a(&mut self, r: u8, g: u8, b: u8, a: u8) {
+        self.state.stroke_color = [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        ];
+        self.state.has_stroke = true;
+    }
+
+    pub(crate) fn set_no_stroke(&mut self) {
+        self.state.has_stroke = false;
+    }
+
+    pub(crate) fn set_fill_a(&mut self, r: u8, g: u8, b: u8, a: u8) {
+        self.state.fill_color = [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        ];
+        self.state.has_fill = true;
+    }
+
+    pub(crate) fn set_no_fill(&mut self) {
+        self.state.has_fill = false;
+    }
+
+    pub(crate) fn set_stroke_weight(&mut self, w: f32) {
+        self.state.stroke_weight = w;
+    }
+
+    // ── transforms ──
+
+    pub(crate) fn push(&mut self) {
+        self.matrix_stack.push(self.matrix);
+    }
+
+    pub(crate) fn pop(&mut self) {
+        if let Some(m) = self.matrix_stack.pop() {
+            self.matrix = m;
+        }
+    }
+
+    pub(crate) fn translate(&mut self, dx: f32, dy: f32) {
+        let t = [1.0, 0.0, dx, 0.0, 1.0, dy];
+        self.matrix = mat_mult(&self.matrix, &t);
+    }
+
+    pub(crate) fn rotate(&mut self, angle: f32) {
+        let c = angle.cos();
+        let s = angle.sin();
+        let r = [c, -s, 0.0, s, c, 0.0];
+        self.matrix = mat_mult(&self.matrix, &r);
+    }
+
+    pub(crate) fn scale(&mut self, sx: f32, sy: f32) {
+        let s = [sx, 0.0, 0.0, 0.0, sy, 0.0];
+        self.matrix = mat_mult(&self.matrix, &s);
+    }
+
+    // ── geometry helpers ──
+
+    fn xform(&self, x: f32, y: f32) -> [f32; 2] {
+        let m = &self.matrix;
+        [m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]]
     }
 
     /// Apply the current transform to a locally-built path.
@@ -245,6 +347,21 @@ impl Context {
         path.transformed(&t)
     }
 
+    /// Extend (or start) the run covering `added` vertices just appended.
+    fn note_run(&mut self, tex: u64, added: usize) {
+        if added == 0 {
+            return;
+        }
+        let added = added as u32;
+        match self.runs.last_mut() {
+            Some(run) if run.tex == tex => run.count += added,
+            _ => {
+                let start = self.vertices.len() as u32 - added;
+                self.runs.push(DrawRun { tex, start, count: added });
+            }
+        }
+    }
+
     fn fill_path(&mut self, path: &Path, color: [f32; 4]) {
         let mut buf: VertexBuffers<Vertex, u32> = VertexBuffers::new();
         let result = self.fill_tess.tessellate_path(
@@ -253,7 +370,10 @@ impl Context {
             &mut BuffersBuilder::new(&mut buf, SolidCtor { color }),
         );
         if result.is_ok() {
+            let before = self.vertices.len();
             append_indexed(&mut self.vertices, &buf);
+            let added = self.vertices.len() - before;
+            self.note_run(0, added);
         }
     }
 
@@ -276,8 +396,161 @@ impl Context {
             &mut BuffersBuilder::new(&mut buf, SolidCtor { color }),
         );
         if result.is_ok() {
+            let before = self.vertices.len();
             append_indexed(&mut self.vertices, &buf);
+            let added = self.vertices.len() - before;
+            self.note_run(0, added);
         }
+    }
+
+    // ── primitives ──
+
+    pub(crate) fn line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32) {
+        if !self.state.has_stroke {
+            return;
+        }
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        if dx * dx + dy * dy < 1e-8 {
+            return;
+        }
+        let mut b = Path::builder();
+        b.begin(lpt(x1, y1));
+        b.line_to(lpt(x2, y2));
+        b.end(false);
+        let path = self.apply_transform(b.build());
+        let color = self.state.stroke_color;
+        self.stroke_path(&path, color);
+    }
+
+    pub(crate) fn point(&mut self, x: f32, y: f32) {
+        if !self.state.has_stroke {
+            return;
+        }
+        let half = self.state.stroke_weight * 0.5;
+        if half <= 0.0 {
+            return;
+        }
+        let mut b = Path::builder();
+        b.add_circle(lpt(x, y), half, Winding::Positive);
+        let path = self.apply_transform(b.build());
+        let color = self.state.stroke_color;
+        self.fill_path(&path, color);
+    }
+
+    pub(crate) fn rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let mut b = Path::builder();
+        b.add_rectangle(&Box2D::new(lpt(x, y), lpt(x + w, y + h)), Winding::Positive);
+        let path = self.apply_transform(b.build());
+        if self.state.has_fill {
+            let color = self.state.fill_color;
+            self.fill_path(&path, color);
+        }
+        if self.state.has_stroke {
+            let color = self.state.stroke_color;
+            self.stroke_path(&path, color);
+        }
+    }
+
+    pub(crate) fn ellipse(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let rx = w * 0.5;
+        let ry = h * 0.5;
+        let mut b = Path::builder();
+        b.add_ellipse(
+            lpt(x + rx, y + ry),
+            lvec(rx, ry),
+            Angle::radians(0.0),
+            Winding::Positive,
+        );
+        let path = self.apply_transform(b.build());
+        if self.state.has_fill {
+            let color = self.state.fill_color;
+            self.fill_path(&path, color);
+        }
+        if self.state.has_stroke {
+            let color = self.state.stroke_color;
+            self.stroke_path(&path, color);
+        }
+    }
+
+    pub(crate) fn triangle(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
+        let mut b = Path::builder();
+        b.begin(lpt(x1, y1));
+        b.line_to(lpt(x2, y2));
+        b.line_to(lpt(x3, y3));
+        b.close();
+        let path = self.apply_transform(b.build());
+        if self.state.has_fill {
+            let color = self.state.fill_color;
+            self.fill_path(&path, color);
+        }
+        if self.state.has_stroke {
+            let color = self.state.stroke_color;
+            self.stroke_path(&path, color);
+        }
+    }
+
+    /// Append a textured quad referencing an offscreen canvas (`tex` is the
+    /// `Graphics` id). UVs cover the full texture, color is white.
+    pub(crate) fn image_quad(&mut self, tex: u64, x: f32, y: f32, w: f32, h: f32) {
+        let color = [1.0, 1.0, 1.0, 1.0];
+        let v = |px: f32, py: f32, u: f32, vv: f32| Vertex {
+            position: self.xform(px, py),
+            color,
+            uv: [u, vv],
+            tex: 1.0,
+        };
+        let tl = v(x, y, 0.0, 0.0);
+        let tr = v(x + w, y, 1.0, 0.0);
+        let br = v(x + w, y + h, 1.0, 1.0);
+        let bl = v(x, y + h, 0.0, 1.0);
+        self.vertices.extend_from_slice(&[tl, tr, br, tl, br, bl]);
+        self.note_run(tex, 6);
+    }
+}
+
+// ── Context ─────────────────────────────────────────────
+
+struct Context {
+    width: u32,
+    height: u32,
+    title: String,
+    msaa_samples: u32,
+    /// When false, the event loop does not spin at max FPS; redraws are requested from input and resize only.
+    continuous_redraw: bool,
+    rec: Recorder,
+    graphics_frames: Vec<GraphicsFrame>,
+    frame_count: u64,
+    mouse_x: f32,
+    mouse_y: f32,
+    mouse_pressed: bool,
+    key_pressed: bool,
+    key_code: char,
+}
+
+impl Context {
+    fn new() -> Self {
+        Self {
+            width: 400,
+            height: 400,
+            title: String::from("ori-pop"),
+            msaa_samples: 4,
+            continuous_redraw: true,
+            rec: Recorder::new(),
+            graphics_frames: Vec::new(),
+            frame_count: 0,
+            mouse_x: 0.0,
+            mouse_y: 0.0,
+            mouse_pressed: false,
+            key_pressed: false,
+            key_code: '\0',
+        }
+    }
+
+    fn reset_frame(&mut self) {
+        self.rec.reset();
+        self.graphics_frames.clear();
+        self.frame_count += 1;
     }
 }
 
@@ -340,14 +613,7 @@ pub fn background(r: u8, g: u8, b: u8) {
 /// Clear the canvas to an RGBA color. The alpha channel is 0 (transparent)
 /// to 255 (opaque).
 pub fn background_a(r: u8, g: u8, b: u8, a: u8) {
-    with_ctx(|ctx| {
-        ctx.bg = wgpu::Color {
-            r: r as f64 / 255.0,
-            g: g as f64 / 255.0,
-            b: b as f64 / 255.0,
-            a: a as f64 / 255.0,
-        };
-    });
+    with_ctx(|ctx| ctx.rec.set_background_a(r, g, b, a));
 }
 
 /// Set the stroke (outline) color to an opaque RGB value and enable stroke.
@@ -359,15 +625,12 @@ pub fn stroke(r: u8, g: u8, b: u8) {
 ///
 /// Alpha is 0 (fully transparent) to 255 (fully opaque).
 pub fn stroke_a(r: u8, g: u8, b: u8, a: u8) {
-    with_ctx(|ctx| {
-        ctx.state.stroke_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0];
-        ctx.state.has_stroke = true;
-    });
+    with_ctx(|ctx| ctx.rec.set_stroke_a(r, g, b, a));
 }
 
 /// Disable stroke for subsequent shapes.
 pub fn no_stroke() {
-    with_ctx(|ctx| ctx.state.has_stroke = false);
+    with_ctx(|ctx| ctx.rec.set_no_stroke());
 }
 
 /// Set the fill color to an opaque RGB value and enable fill.
@@ -379,20 +642,17 @@ pub fn fill(r: u8, g: u8, b: u8) {
 ///
 /// Alpha is 0 (fully transparent) to 255 (fully opaque).
 pub fn fill_a(r: u8, g: u8, b: u8, a: u8) {
-    with_ctx(|ctx| {
-        ctx.state.fill_color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0];
-        ctx.state.has_fill = true;
-    });
+    with_ctx(|ctx| ctx.rec.set_fill_a(r, g, b, a));
 }
 
 /// Disable fill for subsequent shapes (outlines only).
 pub fn no_fill() {
-    with_ctx(|ctx| ctx.state.has_fill = false);
+    with_ctx(|ctx| ctx.rec.set_no_fill());
 }
 
 /// Set the stroke thickness in logical pixels. Default is 1.0.
 pub fn stroke_weight(w: f32) {
-    with_ctx(|ctx| ctx.state.stroke_weight = w);
+    with_ctx(|ctx| ctx.rec.set_stroke_weight(w));
 }
 
 /// Return how many frames have been drawn since [`run`] started.
@@ -429,149 +689,77 @@ pub fn key() -> char {
 
 /// Push current transform onto the stack. Pair with pop().
 pub fn push() {
-    with_ctx(|ctx| ctx.matrix_stack.push(ctx.matrix));
+    with_ctx(|ctx| ctx.rec.push());
 }
 
 /// Pop transform from the stack. Pair with push().
 pub fn pop() {
-    with_ctx(|ctx| {
-        if let Some(m) = ctx.matrix_stack.pop() {
-            ctx.matrix = m;
-        }
-    });
+    with_ctx(|ctx| ctx.rec.pop());
 }
 
 /// Translate by (dx, dy) in current units.
 pub fn translate(dx: f32, dy: f32) {
-    with_ctx(|ctx| {
-        let t = [1.0, 0.0, dx, 0.0, 1.0, dy];
-        ctx.matrix = mat_mult(&ctx.matrix, &t);
-    });
+    with_ctx(|ctx| ctx.rec.translate(dx, dy));
 }
 
 /// Rotate by angle in radians (counter-clockwise).
 pub fn rotate(angle: f32) {
-    with_ctx(|ctx| {
-        let c = angle.cos();
-        let s = angle.sin();
-        let r = [c, -s, 0.0, s, c, 0.0];
-        ctx.matrix = mat_mult(&ctx.matrix, &r);
-    });
+    with_ctx(|ctx| ctx.rec.rotate(angle));
 }
 
 /// Scale by (sx, sy). Use scale(s) for uniform scale.
 pub fn scale(sx: f32, sy: f32) {
-    with_ctx(|ctx| {
-        let s = [sx, 0.0, 0.0, 0.0, sy, 0.0];
-        ctx.matrix = mat_mult(&ctx.matrix, &s);
-    });
+    with_ctx(|ctx| ctx.rec.scale(sx, sy));
 }
 
 /// Draw a line from (`x1`, `y1`) to (`x2`, `y2`) using the current stroke
 /// color and weight. Does nothing if stroke is disabled.
 pub fn line(x1: f32, y1: f32, x2: f32, y2: f32) {
-    with_ctx(|ctx| {
-        if !ctx.state.has_stroke {
-            return;
-        }
-        let dx = x2 - x1;
-        let dy = y2 - y1;
-        if dx * dx + dy * dy < 1e-8 {
-            return;
-        }
-        let mut b = Path::builder();
-        b.begin(lpt(x1, y1));
-        b.line_to(lpt(x2, y2));
-        b.end(false);
-        let path = ctx.apply_transform(b.build());
-        let color = ctx.state.stroke_color;
-        ctx.stroke_path(&path, color);
-    });
+    with_ctx(|ctx| ctx.rec.line(x1, y1, x2, y2));
 }
 
 /// Draw a single point at (`x`, `y`) as a filled dot whose diameter equals
 /// the current stroke weight.
 pub fn point(x: f32, y: f32) {
-    with_ctx(|ctx| {
-        if !ctx.state.has_stroke {
-            return;
-        }
-        let half = ctx.state.stroke_weight * 0.5;
-        if half <= 0.0 {
-            return;
-        }
-        let mut b = Path::builder();
-        b.add_circle(lpt(x, y), half, Winding::Positive);
-        let path = ctx.apply_transform(b.build());
-        let color = ctx.state.stroke_color;
-        ctx.fill_path(&path, color);
-    });
+    with_ctx(|ctx| ctx.rec.point(x, y));
 }
 
 /// Draw a rectangle with its top-left corner at (`x`, `y`) and the given
 /// width and height. Respects current fill and stroke settings.
 pub fn rect(x: f32, y: f32, w: f32, h: f32) {
-    with_ctx(|ctx| {
-        let mut b = Path::builder();
-        b.add_rectangle(
-            &Box2D::new(lpt(x, y), lpt(x + w, y + h)),
-            Winding::Positive,
-        );
-        let path = ctx.apply_transform(b.build());
-        if ctx.state.has_fill {
-            let color = ctx.state.fill_color;
-            ctx.fill_path(&path, color);
-        }
-        if ctx.state.has_stroke {
-            let color = ctx.state.stroke_color;
-            ctx.stroke_path(&path, color);
-        }
-    });
+    with_ctx(|ctx| ctx.rec.rect(x, y, w, h));
 }
 
 /// Draw an ellipse bounded by the rectangle at (`x`, `y`) with the given
 /// width and height. Respects current fill and stroke settings.
 pub fn ellipse(x: f32, y: f32, w: f32, h: f32) {
-    with_ctx(|ctx| {
-        let rx = w * 0.5;
-        let ry = h * 0.5;
-        let mut b = Path::builder();
-        b.add_ellipse(
-            lpt(x + rx, y + ry),
-            lvec(rx, ry),
-            Angle::radians(0.0),
-            Winding::Positive,
-        );
-        let path = ctx.apply_transform(b.build());
-        if ctx.state.has_fill {
-            let color = ctx.state.fill_color;
-            ctx.fill_path(&path, color);
-        }
-        if ctx.state.has_stroke {
-            let color = ctx.state.stroke_color;
-            ctx.stroke_path(&path, color);
-        }
-    });
+    with_ctx(|ctx| ctx.rec.ellipse(x, y, w, h));
 }
 
 /// Draw a triangle with vertices at (`x1`,`y1`), (`x2`,`y2`), (`x3`,`y3`).
 /// Respects current fill and stroke settings.
 pub fn triangle(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
+    with_ctx(|ctx| ctx.rec.triangle(x1, y1, x2, y2, x3, y3));
+}
+
+/// Draw an offscreen [`Graphics`](crate::graphics::Graphics) canvas at
+/// (`x`, `y`) at its native size.
+///
+/// Only supported in the windowed `run()` host for now; under `run3d` and
+/// in studio cartridges the placement quad renders white (texture payloads
+/// arrive with the next cartridge ABI revision).
+pub fn image(g: &crate::graphics::Graphics, x: f32, y: f32) {
+    image_sized(g, x, y, g.width() as f32, g.height() as f32);
+}
+
+/// Draw an offscreen [`Graphics`](crate::graphics::Graphics) canvas into the
+/// rectangle at (`x`, `y`) with size (`w`, `h`).
+pub fn image_sized(g: &crate::graphics::Graphics, x: f32, y: f32, w: f32, h: f32) {
     with_ctx(|ctx| {
-        let mut b = Path::builder();
-        b.begin(lpt(x1, y1));
-        b.line_to(lpt(x2, y2));
-        b.line_to(lpt(x3, y3));
-        b.close();
-        let path = ctx.apply_transform(b.build());
-        if ctx.state.has_fill {
-            let color = ctx.state.fill_color;
-            ctx.fill_path(&path, color);
+        if !ctx.graphics_frames.iter().any(|f| f.id == g.id()) {
+            ctx.graphics_frames.push(g.snapshot());
         }
-        if ctx.state.has_stroke {
-            let color = ctx.state.stroke_color;
-            ctx.stroke_path(&path, color);
-        }
+        ctx.rec.image_quad(g.id(), x, y, w, h);
     });
 }
 
@@ -579,12 +767,33 @@ pub fn triangle(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
 
 const MIN_SURFACE_PIXELS: u32 = 2;
 
+/// Format and sample count for offscreen `Graphics` targets.
+const GFX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const GFX_MSAA: u32 = 4;
+
+/// GPU resources for one offscreen `Graphics` canvas.
+struct GfxTarget {
+    width: u32,
+    height: u32,
+    color_view: wgpu::TextureView,
+    msaa_view: wgpu::TextureView,
+    /// Uniforms for rendering *into* the target (resolution = canvas size).
+    render_bind: wgpu::BindGroup,
+    /// Bind group for sampling the target in the main pass.
+    sample_bind: wgpu::BindGroup,
+    vbuf: Option<wgpu::Buffer>,
+    vbuf_cap: u64,
+}
+
 struct Gpu {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    white_view: wgpu::TextureView,
+    sampler: wgpu::Sampler,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     msaa_view: Option<wgpu::TextureView>,
@@ -594,6 +803,9 @@ struct Gpu {
     /// Persistent vertex buffer — grown on demand, never shrunk.
     vertex_buf:     Option<wgpu::Buffer>,
     vertex_buf_cap: u64,
+    /// Pipeline targeting offscreen `Graphics` textures.
+    gfx_pipeline: wgpu::RenderPipeline,
+    gfx_targets: std::collections::HashMap<u64, GfxTarget>,
 }
 
 fn create_msaa_texture(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32, samples: u32) -> Option<wgpu::TextureView> {
@@ -640,17 +852,139 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
-    fn render(&mut self, bg: wgpu::Color, vertices: &[Vertex]) -> Result<(), wgpu::SurfaceError> {
+    /// (Re)create the GPU target for one offscreen `Graphics` canvas and
+    /// upload this frame's vertices.
+    fn prepare_gfx_target(&mut self, gf: &GraphicsFrame) {
+        let needs_new = self
+            .gfx_targets
+            .get(&gf.id)
+            .map(|t| t.width != gf.width || t.height != gf.height)
+            .unwrap_or(true);
+
+        if needs_new {
+            let extent = wgpu::Extent3d {
+                width: gf.width.max(1),
+                height: gf.height.max(1),
+                depth_or_array_layers: 1,
+            };
+            let color = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("oripop graphics color"),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: GFX_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+            let msaa = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("oripop graphics msaa"),
+                size: extent,
+                mip_level_count: 1,
+                sample_count: GFX_MSAA,
+                dimension: wgpu::TextureDimension::D2,
+                format: GFX_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let msaa_view = msaa.create_view(&wgpu::TextureViewDescriptor::default());
+
+            let uniform = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("oripop graphics uniforms"),
+                contents: bytemuck::cast_slice(&[Uniforms {
+                    resolution: [gf.width as f32, gf.height as f32],
+                    _pad: [0.0; 2],
+                }]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let render_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("oripop graphics render bind"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: uniform.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&self.white_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            // Sampling bind group reuses the main uniform buffer (its
+            // contents track window resolution; the binding stays valid).
+            let sample_bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("oripop graphics sample bind"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&color_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+
+            self.gfx_targets.insert(
+                gf.id,
+                GfxTarget {
+                    width: gf.width,
+                    height: gf.height,
+                    color_view,
+                    msaa_view,
+                    render_bind,
+                    sample_bind,
+                    vbuf: None,
+                    vbuf_cap: 0,
+                },
+            );
+        }
+
+        let target = self.gfx_targets.get_mut(&gf.id).expect("gfx target");
+        let bytes = bytemuck::cast_slice::<Vertex, u8>(&gf.vertices);
+        if !bytes.is_empty() {
+            let needed = bytes.len() as u64;
+            if target.vbuf_cap < needed {
+                let cap = needed.next_power_of_two().max(4096);
+                target.vbuf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("oripop graphics vertices"),
+                    size: cap,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                target.vbuf_cap = cap;
+            }
+            self.queue.write_buffer(target.vbuf.as_ref().unwrap(), 0, bytes);
+        }
+    }
+
+    fn render(&mut self, frame: &Frame2D) -> Result<(), wgpu::SurfaceError> {
         let output      = self.surface.get_current_texture()?;
         let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Prepare offscreen graphics targets (mutable phase, before any
+        // long-lived immutable borrows of self).
+        for gf in &frame.graphics {
+            self.prepare_gfx_target(gf);
+        }
 
         let (target_view, resolve_target) = match &self.msaa_view {
             Some(msaa) => (msaa, Some(&surface_view)),
             None       => (&surface_view, None),
         };
 
-        // Upload vertices into the persistent buffer, growing it only when needed.
-        let bytes = bytemuck::cast_slice::<Vertex, u8>(vertices);
+        // Upload main vertices into the persistent buffer.
+        let bytes = bytemuck::cast_slice::<Vertex, u8>(&frame.vertices);
         let has_verts = !bytes.is_empty();
         if has_verts {
             let needed = bytes.len() as u64;
@@ -671,6 +1005,35 @@ impl Gpu {
             &wgpu::CommandEncoderDescriptor { label: Some("oripop render") },
         );
 
+        // Offscreen graphics passes (before the main pass samples them).
+        for gf in &frame.graphics {
+            let Some(target) = self.gfx_targets.get(&gf.id) else { continue };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("oripop graphics pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target.msaa_view,
+                    resolve_target: Some(&target.color_view),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(gf.bg),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            if let Some(vbuf) = target.vbuf.as_ref() {
+                if !gf.vertices.is_empty() {
+                    pass.set_pipeline(&self.gfx_pipeline);
+                    pass.set_bind_group(0, &target.render_bind, &[]);
+                    pass.set_vertex_buffer(0, vbuf.slice(..));
+                    pass.draw(0..gf.vertices.len() as u32, 0..1);
+                }
+            }
+        }
+
+        // Main pass: replay draw runs, switching texture bind groups.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("oripop pass"),
@@ -678,7 +1041,7 @@ impl Gpu {
                     view:           target_view,
                     resolve_target,
                     ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(bg),
+                        load:  wgpu::LoadOp::Clear(frame.bg),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -690,9 +1053,19 @@ impl Gpu {
 
             if has_verts {
                 pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
                 pass.set_vertex_buffer(0, self.vertex_buf.as_ref().unwrap().slice(..));
-                pass.draw(0..vertices.len() as u32, 0..1);
+                for run in &frame.runs {
+                    let bind = if run.tex == 0 {
+                        &self.uniform_bind_group
+                    } else {
+                        match self.gfx_targets.get(&run.tex) {
+                            Some(t) => &t.sample_bind,
+                            None => continue,
+                        }
+                    };
+                    pass.set_bind_group(0, bind, &[]);
+                    pass.draw(run.start..run.start + run.count, 0..1);
+                }
             }
         }
 
@@ -799,43 +1172,48 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         push_constant_ranges: &[],
     });
 
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("oripop pipeline"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[Vertex::LAYOUT],
-            compilation_options: Default::default(),
-        },
-        fragment: Some(wgpu::FragmentState {
-            module: &shader,
-            entry_point: Some("fs_main"),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-            compilation_options: Default::default(),
-        }),
-        primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleList,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            unclipped_depth: false,
-            conservative: false,
-        },
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: msaa_samples,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
-        multiview: None,
-        cache: None,
-    });
+    let make_pipeline = |label: &str, target: wgpu::TextureFormat, samples: u32| {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::LAYOUT],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: samples,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        })
+    };
+
+    let pipeline     = make_pipeline("oripop pipeline", format, msaa_samples);
+    let gfx_pipeline = make_pipeline("oripop graphics pipeline", GFX_FORMAT, GFX_MSAA);
 
     let msaa_view = create_msaa_texture(&device, format, phys_w, phys_h, msaa_samples);
 
@@ -847,6 +1225,9 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         queue,
         config,
         pipeline,
+        layout: bind_group_layout,
+        white_view,
+        sampler,
         uniform_buffer,
         uniform_bind_group,
         msaa_view,
@@ -855,6 +1236,8 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         scale_factor,
         vertex_buf:     None,
         vertex_buf_cap: 0,
+        gfx_pipeline,
+        gfx_targets: std::collections::HashMap::new(),
     }
 }
 
@@ -988,10 +1371,23 @@ pub fn begin_frame() {
 /// `f32` texture slot at offset 32.
 pub fn take_2d_vertices() -> (wgpu::Color, Vec<u8>) {
     with_ctx(|ctx| {
-        let bg    = ctx.bg;
-        let bytes = bytemuck::cast_slice(&ctx.vertices).to_vec();
-        ctx.vertices.clear();
+        let bg    = ctx.rec.bg;
+        let bytes = bytemuck::cast_slice(&ctx.rec.vertices).to_vec();
+        ctx.rec.vertices.clear();
+        ctx.rec.runs.clear();
+        ctx.graphics_frames.clear();
         (bg, bytes)
+    })
+}
+
+/// Drain the full frame (vertices + draw runs + offscreen graphics) for the
+/// windowed host. Internal: external hosts use [`take_2d_vertices`].
+pub(crate) fn take_frame_2d() -> Frame2D {
+    with_ctx(|ctx| Frame2D {
+        bg: ctx.rec.bg,
+        vertices: std::mem::take(&mut ctx.rec.vertices),
+        runs: std::mem::take(&mut ctx.rec.runs),
+        graphics: std::mem::take(&mut ctx.graphics_frames),
     })
 }
 
@@ -1074,10 +1470,9 @@ impl ApplicationHandler for Runner2D {
             WindowEvent::RedrawRequested => {
                 with_ctx(|ctx| ctx.reset_frame());
                 (self.draw_fn)();
-                let (bg, vertices) =
-                    with_ctx(|ctx| (ctx.bg, std::mem::take(&mut ctx.vertices)));
+                let frame = take_frame_2d();
 
-                match gpu.render(bg, &vertices) {
+                match gpu.render(&frame) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost) => {
                         gpu.reconfigure();
@@ -1180,4 +1575,67 @@ pub fn run(draw_fn: fn()) {
 
     let mut app = Runner2D { draw_fn, window_attrs, msaa, window: None, gpu: None };
     event_loop.run_app(&mut app).expect("event loop error");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graphics::create_graphics;
+
+    #[test]
+    fn solid_drawing_coalesces_into_one_run() {
+        begin_frame();
+        stroke(255, 255, 255);
+        line(0.0, 0.0, 10.0, 0.0);
+        line(0.0, 5.0, 10.0, 5.0);
+        fill(100, 100, 100);
+        rect(2.0, 2.0, 4.0, 4.0);
+        let frame = take_frame_2d();
+        assert!(!frame.vertices.is_empty());
+        assert_eq!(frame.runs.len(), 1, "solid geometry must share one run");
+        assert_eq!(frame.runs[0].tex, 0);
+        assert_eq!(frame.runs[0].count as usize, frame.vertices.len());
+        assert!(frame.graphics.is_empty());
+    }
+
+    #[test]
+    fn image_emits_textured_run_and_graphics_snapshot() {
+        begin_frame();
+        let mut g = create_graphics(64, 32);
+        g.background(10, 10, 10);
+        g.fill(200, 100, 50);
+        g.rect(8.0, 8.0, 16.0, 16.0);
+
+        stroke(255, 255, 255);
+        line(0.0, 0.0, 10.0, 0.0);
+        image(&g, 4.0, 4.0);
+        line(0.0, 5.0, 10.0, 5.0);
+
+        let frame = take_frame_2d();
+        // solid run, textured quad run, solid run again
+        assert_eq!(frame.runs.len(), 3);
+        assert_eq!(frame.runs[0].tex, 0);
+        assert_ne!(frame.runs[1].tex, 0);
+        assert_eq!(frame.runs[1].count, 6);
+        assert_eq!(frame.runs[2].tex, 0);
+        let total: u32 = frame.runs.iter().map(|r| r.count).sum();
+        assert_eq!(total as usize, frame.vertices.len());
+
+        assert_eq!(frame.graphics.len(), 1);
+        assert_eq!(frame.graphics[0].id, frame.runs[1].tex);
+        assert_eq!(frame.graphics[0].width, 64);
+        assert_eq!(frame.graphics[0].height, 32);
+        assert!(!frame.graphics[0].vertices.is_empty());
+    }
+
+    #[test]
+    fn graphics_background_clears_recorded_geometry() {
+        let mut g = create_graphics(32, 32);
+        g.fill(255, 0, 0);
+        g.rect(0.0, 0.0, 8.0, 8.0);
+        let before = g.snapshot().vertices.len();
+        assert!(before > 0);
+        g.background(0, 0, 0);
+        assert_eq!(g.snapshot().vertices.len(), 0);
+    }
 }
