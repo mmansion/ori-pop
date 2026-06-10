@@ -35,7 +35,7 @@ fn draw() {
             let r = 36.0 + i as f32 * 22.0 + phase.sin() * 12.0;
             let lum = 120 + (i * 16) as u8;
             g.stroke(lum, 180, 255 - lum);
-            g.ellipse(110.0 - r * 0.5, 110.0 - r * 0.5, r, r);
+            g.ellipse(110.0, 110.0, r, r);
         }
         g.stroke(255, 220, 120);
         g.stroke_weight(2.0);

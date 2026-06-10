@@ -18,13 +18,13 @@ fn draw() {
     no_stroke();
 
     fill_a(255, 60, 60, 140);
-    ellipse(cx - spread - d / 2.0, cy - spread * 0.5 - d / 2.0, d, d);
+    ellipse(cx - spread, cy - spread * 0.5, d, d);
 
     fill_a(60, 200, 60, 140);
-    ellipse(cx + spread - d / 2.0, cy - spread * 0.5 - d / 2.0, d, d);
+    ellipse(cx + spread, cy - spread * 0.5, d, d);
 
     fill_a(60, 60, 255, 140);
-    ellipse(cx - d / 2.0, cy + spread * 0.5 - d / 2.0, d, d);
+    ellipse(cx, cy + spread * 0.5, d, d);
 
     // Semi-transparent white stroke over everything
     stroke_a(255, 255, 255, 80);

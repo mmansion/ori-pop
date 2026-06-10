@@ -260,7 +260,7 @@ fn draw_spatial_handles(b: &Bezier, drag: Drag) {
             stroke(40, 60, 90);
         }
         stroke_weight(2.0);
-        ellipse(sx - r, sy - r, r * 2.0, r * 2.0);
+        circle(sx, sy, r * 2.0);
     }
 }
 

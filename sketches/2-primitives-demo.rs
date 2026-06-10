@@ -63,8 +63,8 @@ fn draw() {
         let w = rng.random_range(60.0..350.0);
         let h = rng.random_range(60.0..350.0);
         ellipse(
-            rng.random_range(-w * 0.5..W - w * 0.5),
-            rng.random_range(-h * 0.5..H - h * 0.5),
+            rng.random_range(0.0..W),
+            rng.random_range(0.0..H),
             w, h,
         );
     }

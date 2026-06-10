@@ -337,7 +337,7 @@ fn draw() {
     no_fill();
     stroke(255, 255, 255);
     stroke_weight(2.0);
-    ellipse(cx - r, cy - r, r * 2.0, r * 2.0);
+    circle(cx, cy, r * 2.0);
 
     // Hub → focal-dot guide line
     stroke_a(255, 255, 255, 110);
@@ -350,20 +350,20 @@ fn draw() {
     stroke_weight(2.0);
     let rhx = cx + r;
     let rhy = cy;
-    ellipse(rhx - 9.0, rhy - 9.0, 18.0, 18.0);
+    circle(rhx, rhy, 18.0);
 
     // Dial handle — filled white disc
     no_stroke();
     fill(255, 255, 255);
     let dhx = cx + r * s.dial_angle.cos();
     let dhy = cy + r * s.dial_angle.sin();
-    ellipse(dhx - 10.0, dhy - 10.0, 20.0, 20.0);
+    circle(dhx, dhy, 20.0);
 
     // Focal direction dot — filled white, slightly larger
     fill(255, 255, 255);
     let tcx = cx + s.gtip_x;
     let tcy = cy + s.gtip_y;
-    ellipse(tcx - 11.0, tcy - 11.0, 22.0, 22.0);
+    circle(tcx, tcy, 22.0);
 
     // Slider track
     no_fill();
@@ -375,5 +375,5 @@ fn draw() {
     let thumb_x = SLIDER_X0 + t.clamp(0.0, 1.0) * (SLIDER_X1 - SLIDER_X0);
     no_stroke();
     fill(255, 255, 255);
-    ellipse(thumb_x - 8.0, SLIDER_Y - 2.0, 16.0, 16.0);
+    circle(thumb_x, SLIDER_Y + 6.0, 16.0);
 }

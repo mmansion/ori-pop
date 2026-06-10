@@ -22,7 +22,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::draw::{GraphicsFrame, Recorder};
+use crate::draw::{ArcMode, GraphicsFrame, Recorder, ShapeMode, StrokeCap, StrokeJoin};
 
 /// Ids start at 1; 0 is the solid-color sentinel in draw runs.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -146,7 +146,87 @@ impl Graphics {
         self.rec.ellipse(x, y, w, h);
     }
 
+    pub fn circle(&mut self, x: f32, y: f32, d: f32) {
+        self.rec.circle(x, y, d);
+    }
+
+    pub fn square(&mut self, x: f32, y: f32, s: f32) {
+        self.rec.square(x, y, s);
+    }
+
+    pub fn quad(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, x4: f32, y4: f32) {
+        self.rec.quad(x1, y1, x2, y2, x3, y3, x4, y4);
+    }
+
     pub fn triangle(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
         self.rec.triangle(x1, y1, x2, y2, x3, y3);
+    }
+
+    pub fn arc(&mut self, x: f32, y: f32, w: f32, h: f32, start: f32, stop: f32) {
+        self.rec.arc(x, y, w, h, start, stop, ArcMode::Open);
+    }
+
+    pub fn arc_with_mode(&mut self, x: f32, y: f32, w: f32, h: f32, start: f32, stop: f32, mode: ArcMode) {
+        self.rec.arc(x, y, w, h, start, stop, mode);
+    }
+
+    pub fn bezier(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, x4: f32, y4: f32) {
+        self.rec.bezier(x1, y1, x2, y2, x3, y3, x4, y4);
+    }
+
+    pub fn curve(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, x4: f32, y4: f32) {
+        self.rec.curve(x1, y1, x2, y2, x3, y3, x4, y4);
+    }
+
+    pub fn begin_shape(&mut self) {
+        self.rec.begin_shape();
+    }
+
+    pub fn vertex(&mut self, x: f32, y: f32) {
+        self.rec.vertex(x, y);
+    }
+
+    pub fn bezier_vertex(&mut self, cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32) {
+        self.rec.bezier_vertex(cx1, cy1, cx2, cy2, x, y);
+    }
+
+    pub fn quadratic_vertex(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.rec.quadratic_vertex(cx, cy, x, y);
+    }
+
+    pub fn curve_vertex(&mut self, x: f32, y: f32) {
+        self.rec.curve_vertex(x, y);
+    }
+
+    pub fn begin_contour(&mut self) {
+        self.rec.begin_contour();
+    }
+
+    pub fn end_contour(&mut self) {
+        self.rec.end_contour();
+    }
+
+    pub fn end_shape(&mut self) {
+        self.rec.end_shape(false);
+    }
+
+    pub fn end_shape_close(&mut self) {
+        self.rec.end_shape(true);
+    }
+
+    pub fn rect_mode(&mut self, mode: ShapeMode) {
+        self.rec.set_rect_mode(mode);
+    }
+
+    pub fn ellipse_mode(&mut self, mode: ShapeMode) {
+        self.rec.set_ellipse_mode(mode);
+    }
+
+    pub fn stroke_cap(&mut self, cap: StrokeCap) {
+        self.rec.set_stroke_cap(cap);
+    }
+
+    pub fn stroke_join(&mut self, join: StrokeJoin) {
+        self.rec.set_stroke_join(join);
     }
 }

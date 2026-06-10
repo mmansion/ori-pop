@@ -187,6 +187,51 @@ fn mat_mult(m: &[f32; 6], a: &[f32; 6]) -> [f32; 6] {
     ]
 }
 
+// ── Modes & attributes ──────────────────────────────────
+
+/// How `rect`/`ellipse` (and `square`/`circle`/`arc`) interpret their
+/// coordinate arguments. Mirrors Processing's `rectMode()`/`ellipseMode()`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ShapeMode {
+    /// (x, y) is the top-left corner; (w, h) are dimensions.
+    Corner,
+    /// (x1, y1) and (x2, y2) are opposite corners.
+    Corners,
+    /// (x, y) is the center; (w, h) are dimensions.
+    Center,
+    /// (x, y) is the center; (rx, ry) are radii.
+    Radius,
+}
+
+/// Arc rendering mode (Processing's `OPEN` / `CHORD` / `PIE`).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ArcMode {
+    /// Processing default: stroke is the open arc, fill is a pie wedge.
+    Open,
+    /// Both stroke and fill closed by the chord.
+    Chord,
+    /// Both stroke and fill closed through the center (wedge).
+    Pie,
+}
+
+/// Stroke endpoint style (Processing's `strokeCap()`).
+/// Note Processing naming: `Square` is a flat cap at the endpoint,
+/// `Project` extends past it by half the stroke weight.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum StrokeCap {
+    Round,
+    Square,
+    Project,
+}
+
+/// Stroke corner style (Processing's `strokeJoin()`).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum StrokeJoin {
+    Miter,
+    Bevel,
+    Round,
+}
+
 // ── Draw State ──────────────────────────────────────────
 
 struct DrawState {
@@ -195,6 +240,10 @@ struct DrawState {
     has_stroke: bool,
     fill_color: [f32; 4],
     has_fill: bool,
+    rect_mode: ShapeMode,
+    ellipse_mode: ShapeMode,
+    cap: StrokeCap,
+    join: StrokeJoin,
 }
 
 impl Default for DrawState {
@@ -205,7 +254,141 @@ impl Default for DrawState {
             has_stroke: true,
             fill_color: [1.0, 1.0, 1.0, 1.0],
             has_fill: true,
+            // Processing defaults.
+            rect_mode: ShapeMode::Corner,
+            ellipse_mode: ShapeMode::Center,
+            cap: StrokeCap::Round,
+            join: StrokeJoin::Miter,
         }
+    }
+}
+
+/// Resolve mode-dependent shape arguments to (x, y, w, h) with (x, y) the
+/// top-left corner.
+fn resolve_box(mode: ShapeMode, a: f32, b: f32, c: f32, d: f32) -> (f32, f32, f32, f32) {
+    match mode {
+        ShapeMode::Corner => (a, b, c, d),
+        ShapeMode::Corners => (a, b, c - a, d - b),
+        ShapeMode::Center => (a - c * 0.5, b - d * 0.5, c, d),
+        ShapeMode::Radius => (a - c, b - d, c * 2.0, d * 2.0),
+    }
+}
+
+// ── Custom shapes (begin_shape / vertex / end_shape) ────
+
+/// One recorded vertex of a custom shape.
+#[derive(Copy, Clone)]
+enum SVtx {
+    /// Straight segment to (x, y).
+    V([f32; 2]),
+    /// Cubic bezier via two controls to an anchor.
+    B([f32; 2], [f32; 2], [f32; 2]),
+    /// Quadratic bezier via one control to an anchor.
+    Q([f32; 2], [f32; 2]),
+    /// Catmull-Rom curve vertex (first/last act as control points).
+    C([f32; 2]),
+}
+
+struct ShapeRec {
+    outer: Vec<SVtx>,
+    contours: Vec<Vec<SVtx>>,
+    in_contour: bool,
+}
+
+impl ShapeRec {
+    fn new() -> Self {
+        Self { outer: Vec::new(), contours: Vec::new(), in_contour: false }
+    }
+
+    fn current(&mut self) -> &mut Vec<SVtx> {
+        if self.in_contour {
+            self.contours.last_mut().expect("begin_contour pushes a ring")
+        } else {
+            &mut self.outer
+        }
+    }
+}
+
+/// Append one ring of shape vertices to a path builder, expanding
+/// Catmull-Rom runs into cubic beziers. `close` ends the ring closed.
+fn emit_ring(b: &mut lyon::path::path::Builder, ring: &[SVtx], close: bool) {
+    if ring.is_empty() {
+        return;
+    }
+
+    let mut started = false;
+    let start_or_line = |b: &mut lyon::path::path::Builder, p: [f32; 2], started: &mut bool| {
+        if *started {
+            b.line_to(lpt(p[0], p[1]));
+        } else {
+            b.begin(lpt(p[0], p[1]));
+            *started = true;
+        }
+    };
+
+    let mut i = 0;
+    while i < ring.len() {
+        match ring[i] {
+            SVtx::V(p) => {
+                start_or_line(b, p, &mut started);
+                i += 1;
+            }
+            SVtx::B(c1, c2, to) => {
+                if !started {
+                    b.begin(lpt(to[0], to[1]));
+                    started = true;
+                } else {
+                    b.cubic_bezier_to(lpt(c1[0], c1[1]), lpt(c2[0], c2[1]), lpt(to[0], to[1]));
+                }
+                i += 1;
+            }
+            SVtx::Q(c, to) => {
+                if !started {
+                    b.begin(lpt(to[0], to[1]));
+                    started = true;
+                } else {
+                    b.quadratic_bezier_to(lpt(c[0], c[1]), lpt(to[0], to[1]));
+                }
+                i += 1;
+            }
+            SVtx::C(_) => {
+                // Collect the run of consecutive curve vertices.
+                let run_start = i;
+                while i < ring.len() && matches!(ring[i], SVtx::C(_)) {
+                    i += 1;
+                }
+                let pts: Vec<[f32; 2]> = ring[run_start..i]
+                    .iter()
+                    .map(|v| match v {
+                        SVtx::C(p) => *p,
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                if pts.len() < 4 {
+                    // Processing draws nothing until four curve vertices
+                    // exist; degrade to straight segments.
+                    for p in &pts {
+                        start_or_line(b, *p, &mut started);
+                    }
+                } else {
+                    start_or_line(b, pts[1], &mut started);
+                    for w in pts.windows(4) {
+                        let (p0, p1, p2, p3) = (w[0], w[1], w[2], w[3]);
+                        let c1 = [p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0];
+                        let c2 = [p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0];
+                        b.cubic_bezier_to(
+                            lpt(c1[0], c1[1]),
+                            lpt(c2[0], c2[1]),
+                            lpt(p2[0], p2[1]),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if started {
+        b.end(close);
     }
 }
 
@@ -224,6 +407,7 @@ pub(crate) struct Recorder {
     matrix_stack: Vec<[f32; 6]>,
     fill_tess: FillTessellator,
     stroke_tess: StrokeTessellator,
+    shape: Option<ShapeRec>,
 }
 
 impl Recorder {
@@ -237,6 +421,7 @@ impl Recorder {
             matrix_stack: Vec::new(),
             fill_tess: FillTessellator::new(),
             stroke_tess: StrokeTessellator::new(),
+            shape: None,
         }
     }
 
@@ -295,6 +480,22 @@ impl Recorder {
 
     pub(crate) fn set_stroke_weight(&mut self, w: f32) {
         self.state.stroke_weight = w;
+    }
+
+    pub(crate) fn set_rect_mode(&mut self, mode: ShapeMode) {
+        self.state.rect_mode = mode;
+    }
+
+    pub(crate) fn set_ellipse_mode(&mut self, mode: ShapeMode) {
+        self.state.ellipse_mode = mode;
+    }
+
+    pub(crate) fn set_stroke_cap(&mut self, cap: StrokeCap) {
+        self.state.cap = cap;
+    }
+
+    pub(crate) fn set_stroke_join(&mut self, join: StrokeJoin) {
+        self.state.join = join;
     }
 
     // ── transforms ──
@@ -382,13 +583,22 @@ impl Recorder {
         if weight <= 0.0 {
             return;
         }
-        // Processing defaults: round caps, miter joins. Exposed as
-        // stroke_cap()/stroke_join() state in a later tier.
+        // Processing naming: SQUARE is a flat (butt) cap, PROJECT extends.
+        let cap = match self.state.cap {
+            StrokeCap::Round => LineCap::Round,
+            StrokeCap::Square => LineCap::Butt,
+            StrokeCap::Project => LineCap::Square,
+        };
+        let join = match self.state.join {
+            StrokeJoin::Miter => LineJoin::Miter,
+            StrokeJoin::Bevel => LineJoin::Bevel,
+            StrokeJoin::Round => LineJoin::Round,
+        };
         let options = StrokeOptions::default()
             .with_line_width(weight)
-            .with_start_cap(LineCap::Round)
-            .with_end_cap(LineCap::Round)
-            .with_line_join(LineJoin::Miter);
+            .with_start_cap(cap)
+            .with_end_cap(cap)
+            .with_line_join(join);
         let mut buf: VertexBuffers<Vertex, u32> = VertexBuffers::new();
         let result = self.stroke_tess.tessellate_path(
             path,
@@ -438,10 +648,9 @@ impl Recorder {
         self.fill_path(&path, color);
     }
 
-    pub(crate) fn rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        let mut b = Path::builder();
-        b.add_rectangle(&Box2D::new(lpt(x, y), lpt(x + w, y + h)), Winding::Positive);
-        let path = self.apply_transform(b.build());
+    /// Fill + stroke a finished path with the current state.
+    fn paint_path(&mut self, path: Path) {
+        let path = self.apply_transform(path);
         if self.state.has_fill {
             let color = self.state.fill_color;
             self.fill_path(&path, color);
@@ -452,7 +661,19 @@ impl Recorder {
         }
     }
 
-    pub(crate) fn ellipse(&mut self, x: f32, y: f32, w: f32, h: f32) {
+    pub(crate) fn rect(&mut self, a: f32, b_: f32, c: f32, d: f32) {
+        let (x, y, w, h) = resolve_box(self.state.rect_mode, a, b_, c, d);
+        let mut b = Path::builder();
+        b.add_rectangle(&Box2D::new(lpt(x, y), lpt(x + w, y + h)), Winding::Positive);
+        self.paint_path(b.build());
+    }
+
+    pub(crate) fn square(&mut self, a: f32, b: f32, s: f32) {
+        self.rect(a, b, s, s);
+    }
+
+    pub(crate) fn ellipse(&mut self, a: f32, b_: f32, c: f32, d: f32) {
+        let (x, y, w, h) = resolve_box(self.state.ellipse_mode, a, b_, c, d);
         let rx = w * 0.5;
         let ry = h * 0.5;
         let mut b = Path::builder();
@@ -462,15 +683,186 @@ impl Recorder {
             Angle::radians(0.0),
             Winding::Positive,
         );
-        let path = self.apply_transform(b.build());
+        self.paint_path(b.build());
+    }
+
+    pub(crate) fn circle(&mut self, a: f32, b: f32, d: f32) {
+        self.ellipse(a, b, d, d);
+    }
+
+    pub(crate) fn quad(
+        &mut self,
+        x1: f32, y1: f32,
+        x2: f32, y2: f32,
+        x3: f32, y3: f32,
+        x4: f32, y4: f32,
+    ) {
+        let mut b = Path::builder();
+        b.begin(lpt(x1, y1));
+        b.line_to(lpt(x2, y2));
+        b.line_to(lpt(x3, y3));
+        b.line_to(lpt(x4, y4));
+        b.close();
+        self.paint_path(b.build());
+    }
+
+    /// Arc of the ellipse described by (a, b, c, d) under `ellipse_mode`,
+    /// from `start` to `stop` radians (0 = +x axis, increasing clockwise on
+    /// screen because y grows down — Processing semantics).
+    pub(crate) fn arc(&mut self, a: f32, b_: f32, c: f32, d: f32, start: f32, stop: f32, mode: ArcMode) {
+        if stop <= start {
+            return;
+        }
+        let (x, y, w, h) = resolve_box(self.state.ellipse_mode, a, b_, c, d);
+        let rx = w * 0.5;
+        let ry = h * 0.5;
+        let center = lpt(x + rx, y + ry);
+        let sweep = (stop - start).min(std::f32::consts::TAU);
+        let arc = lyon::geom::Arc {
+            center,
+            radii: lvec(rx, ry),
+            start_angle: Angle::radians(start),
+            sweep_angle: Angle::radians(sweep),
+            x_rotation: Angle::radians(0.0),
+        };
+        let from = arc.from();
+
+        // Build one ring with the requested closure shape.
+        let build = |kind: ArcMode| -> Path {
+            let mut b = Path::builder();
+            match kind {
+                ArcMode::Pie => {
+                    b.begin(center);
+                    b.line_to(from);
+                }
+                _ => {
+                    b.begin(from);
+                }
+            }
+            arc.for_each_quadratic_bezier(&mut |q| {
+                b.quadratic_bezier_to(q.ctrl, q.to);
+            });
+            match kind {
+                ArcMode::Open => b.end(false),
+                ArcMode::Chord | ArcMode::Pie => b.close(),
+            }
+            b.build()
+        };
+
+        // Processing default (`Open`): pie-shaped fill, open-arc stroke.
         if self.state.has_fill {
+            let fill_kind = match mode {
+                ArcMode::Chord => ArcMode::Chord,
+                _ => ArcMode::Pie,
+            };
+            let path = self.apply_transform(build(fill_kind));
             let color = self.state.fill_color;
             self.fill_path(&path, color);
         }
         if self.state.has_stroke {
+            let path = self.apply_transform(build(mode));
             let color = self.state.stroke_color;
             self.stroke_path(&path, color);
         }
+    }
+
+    /// Stroke a cubic bezier from (x1, y1) to (x4, y4) with control points
+    /// (x2, y2) and (x3, y3).
+    pub(crate) fn bezier(
+        &mut self,
+        x1: f32, y1: f32,
+        x2: f32, y2: f32,
+        x3: f32, y3: f32,
+        x4: f32, y4: f32,
+    ) {
+        if !self.state.has_stroke {
+            return;
+        }
+        let mut b = Path::builder();
+        b.begin(lpt(x1, y1));
+        b.cubic_bezier_to(lpt(x2, y2), lpt(x3, y3), lpt(x4, y4));
+        b.end(false);
+        let path = self.apply_transform(b.build());
+        let color = self.state.stroke_color;
+        self.stroke_path(&path, color);
+    }
+
+    /// Stroke a Catmull-Rom segment between (x2, y2) and (x3, y3);
+    /// (x1, y1) and (x4, y4) shape the curve as control points.
+    pub(crate) fn curve(
+        &mut self,
+        x1: f32, y1: f32,
+        x2: f32, y2: f32,
+        x3: f32, y3: f32,
+        x4: f32, y4: f32,
+    ) {
+        if !self.state.has_stroke {
+            return;
+        }
+        let c1 = lpt(x2 + (x3 - x1) / 6.0, y2 + (y3 - y1) / 6.0);
+        let c2 = lpt(x3 - (x4 - x2) / 6.0, y3 - (y4 - y2) / 6.0);
+        let mut b = Path::builder();
+        b.begin(lpt(x2, y2));
+        b.cubic_bezier_to(c1, c2, lpt(x3, y3));
+        b.end(false);
+        let path = self.apply_transform(b.build());
+        let color = self.state.stroke_color;
+        self.stroke_path(&path, color);
+    }
+
+    // ── custom shapes ──
+
+    pub(crate) fn begin_shape(&mut self) {
+        self.shape = Some(ShapeRec::new());
+    }
+
+    pub(crate) fn vertex(&mut self, x: f32, y: f32) {
+        if let Some(s) = self.shape.as_mut() {
+            s.current().push(SVtx::V([x, y]));
+        }
+    }
+
+    pub(crate) fn bezier_vertex(&mut self, cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32) {
+        if let Some(s) = self.shape.as_mut() {
+            s.current().push(SVtx::B([cx1, cy1], [cx2, cy2], [x, y]));
+        }
+    }
+
+    pub(crate) fn quadratic_vertex(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        if let Some(s) = self.shape.as_mut() {
+            s.current().push(SVtx::Q([cx, cy], [x, y]));
+        }
+    }
+
+    pub(crate) fn curve_vertex(&mut self, x: f32, y: f32) {
+        if let Some(s) = self.shape.as_mut() {
+            s.current().push(SVtx::C([x, y]));
+        }
+    }
+
+    pub(crate) fn begin_contour(&mut self) {
+        if let Some(s) = self.shape.as_mut() {
+            s.contours.push(Vec::new());
+            s.in_contour = true;
+        }
+    }
+
+    pub(crate) fn end_contour(&mut self) {
+        if let Some(s) = self.shape.as_mut() {
+            s.in_contour = false;
+        }
+    }
+
+    pub(crate) fn end_shape(&mut self, close: bool) {
+        let Some(shape) = self.shape.take() else { return };
+        let mut b = Path::builder();
+        // The outer ring closes only when requested; contours always close.
+        emit_ring(&mut b, &shape.outer, close);
+        for ring in &shape.contours {
+            emit_ring(&mut b, ring, true);
+        }
+        // Even-odd fill (lyon default) makes contours read as holes.
+        self.paint_path(b.build());
     }
 
     pub(crate) fn triangle(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
@@ -730,16 +1122,171 @@ pub fn rect(x: f32, y: f32, w: f32, h: f32) {
     with_ctx(|ctx| ctx.rec.rect(x, y, w, h));
 }
 
-/// Draw an ellipse bounded by the rectangle at (`x`, `y`) with the given
-/// width and height. Respects current fill and stroke settings.
+/// Draw an ellipse centered at (`x`, `y`) with the given width and height
+/// (Processing default `ellipse_mode(Center)`; change with [`ellipse_mode`]).
+/// Respects current fill and stroke settings.
 pub fn ellipse(x: f32, y: f32, w: f32, h: f32) {
     with_ctx(|ctx| ctx.rec.ellipse(x, y, w, h));
+}
+
+/// Draw a circle centered at (`x`, `y`) with diameter `d` (under the
+/// current [`ellipse_mode`]).
+pub fn circle(x: f32, y: f32, d: f32) {
+    with_ctx(|ctx| ctx.rec.circle(x, y, d));
+}
+
+/// Draw a square with its top-left corner at (`x`, `y`) and side `s`
+/// (under the current [`rect_mode`]).
+pub fn square(x: f32, y: f32, s: f32) {
+    with_ctx(|ctx| ctx.rec.square(x, y, s));
+}
+
+/// Draw a quadrilateral through four points in order.
+pub fn quad(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, x4: f32, y4: f32) {
+    with_ctx(|ctx| ctx.rec.quad(x1, y1, x2, y2, x3, y3, x4, y4));
 }
 
 /// Draw a triangle with vertices at (`x1`,`y1`), (`x2`,`y2`), (`x3`,`y3`).
 /// Respects current fill and stroke settings.
 pub fn triangle(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) {
     with_ctx(|ctx| ctx.rec.triangle(x1, y1, x2, y2, x3, y3));
+}
+
+/// Draw an arc of the ellipse described by (`x`, `y`, `w`, `h`) under the
+/// current [`ellipse_mode`], from `start` to `stop` radians (0 = +x axis,
+/// increasing clockwise on screen). Processing default rendering: open
+/// stroke, pie-shaped fill. See [`arc_with_mode`] for chord/pie closure.
+pub fn arc(x: f32, y: f32, w: f32, h: f32, start: f32, stop: f32) {
+    with_ctx(|ctx| ctx.rec.arc(x, y, w, h, start, stop, ArcMode::Open));
+}
+
+/// [`arc`] with an explicit [`ArcMode`] (`Open`, `Chord`, or `Pie`).
+pub fn arc_with_mode(x: f32, y: f32, w: f32, h: f32, start: f32, stop: f32, mode: ArcMode) {
+    with_ctx(|ctx| ctx.rec.arc(x, y, w, h, start, stop, mode));
+}
+
+/// Stroke a cubic bezier from (`x1`, `y1`) to (`x4`, `y4`) with control
+/// points (`x2`, `y2`) and (`x3`, `y3`).
+pub fn bezier(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, x4: f32, y4: f32) {
+    with_ctx(|ctx| ctx.rec.bezier(x1, y1, x2, y2, x3, y3, x4, y4));
+}
+
+/// Stroke a Catmull-Rom curve between (`x2`, `y2`) and (`x3`, `y3`);
+/// the first and last points shape the curve as control points.
+pub fn curve(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32, x4: f32, y4: f32) {
+    with_ctx(|ctx| ctx.rec.curve(x1, y1, x2, y2, x3, y3, x4, y4));
+}
+
+// ── Custom shapes ──
+
+/// Start recording a custom shape. Add vertices with [`vertex`],
+/// [`bezier_vertex`], [`quadratic_vertex`], [`curve_vertex`]; cut holes with
+/// [`begin_contour`]/[`end_contour`]; finish with [`end_shape`] or
+/// [`end_shape_close`].
+pub fn begin_shape() {
+    with_ctx(|ctx| ctx.rec.begin_shape());
+}
+
+/// Add a straight-segment vertex to the current shape.
+pub fn vertex(x: f32, y: f32) {
+    with_ctx(|ctx| ctx.rec.vertex(x, y));
+}
+
+/// Add a cubic-bezier segment to the current shape: two control points,
+/// then the anchor.
+pub fn bezier_vertex(cx1: f32, cy1: f32, cx2: f32, cy2: f32, x: f32, y: f32) {
+    with_ctx(|ctx| ctx.rec.bezier_vertex(cx1, cy1, cx2, cy2, x, y));
+}
+
+/// Add a quadratic-bezier segment to the current shape: one control point,
+/// then the anchor.
+pub fn quadratic_vertex(cx: f32, cy: f32, x: f32, y: f32) {
+    with_ctx(|ctx| ctx.rec.quadratic_vertex(cx, cy, x, y));
+}
+
+/// Add a Catmull-Rom curve vertex. The first and last curve vertices of a
+/// run act as control points and are not drawn through.
+pub fn curve_vertex(x: f32, y: f32) {
+    with_ctx(|ctx| ctx.rec.curve_vertex(x, y));
+}
+
+/// Start a hole (inner contour) in the current shape.
+pub fn begin_contour() {
+    with_ctx(|ctx| ctx.rec.begin_contour());
+}
+
+/// Finish the current hole.
+pub fn end_contour() {
+    with_ctx(|ctx| ctx.rec.end_contour());
+}
+
+/// Finish the current shape, leaving the outline open.
+pub fn end_shape() {
+    with_ctx(|ctx| ctx.rec.end_shape(false));
+}
+
+/// Finish the current shape, closing the outline (Processing's
+/// `endShape(CLOSE)`).
+pub fn end_shape_close() {
+    with_ctx(|ctx| ctx.rec.end_shape(true));
+}
+
+// ── Modes & attributes ──
+
+/// Set how [`rect`]/[`square`] interpret their arguments. Default
+/// [`ShapeMode::Corner`].
+pub fn rect_mode(mode: ShapeMode) {
+    with_ctx(|ctx| ctx.rec.set_rect_mode(mode));
+}
+
+/// Set how [`ellipse`]/[`circle`]/[`arc`] interpret their arguments.
+/// Default [`ShapeMode::Center`].
+pub fn ellipse_mode(mode: ShapeMode) {
+    with_ctx(|ctx| ctx.rec.set_ellipse_mode(mode));
+}
+
+/// Set the stroke endpoint style. Default [`StrokeCap::Round`].
+pub fn stroke_cap(cap: StrokeCap) {
+    with_ctx(|ctx| ctx.rec.set_stroke_cap(cap));
+}
+
+/// Set the stroke corner style. Default [`StrokeJoin::Miter`].
+pub fn stroke_join(join: StrokeJoin) {
+    with_ctx(|ctx| ctx.rec.set_stroke_join(join));
+}
+
+// ── Curve evaluation (pure math, per coordinate) ────────
+
+/// Evaluate a cubic bezier coordinate at `t` in [0, 1].
+/// `a` and `d` are anchors; `b` and `c` are control points.
+pub fn bezier_point(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
+    let u = 1.0 - t;
+    u * u * u * a + 3.0 * u * u * t * b + 3.0 * u * t * t * c + t * t * t * d
+}
+
+/// Tangent (derivative) of a cubic bezier coordinate at `t` in [0, 1].
+pub fn bezier_tangent(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
+    let u = 1.0 - t;
+    3.0 * u * u * (b - a) + 6.0 * u * t * (c - b) + 3.0 * t * t * (d - c)
+}
+
+/// Evaluate a Catmull-Rom coordinate at `t` in [0, 1] between `b` and `c`;
+/// `a` and `d` are the neighboring control points.
+pub fn curve_point(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    0.5 * ((2.0 * b)
+        + (-a + c) * t
+        + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+        + (-a + 3.0 * b - 3.0 * c + d) * t3)
+}
+
+/// Tangent (derivative) of a Catmull-Rom coordinate at `t` in [0, 1].
+pub fn curve_tangent(a: f32, b: f32, c: f32, d: f32, t: f32) -> f32 {
+    let t2 = t * t;
+    0.5 * ((-a + c)
+        + 2.0 * (2.0 * a - 5.0 * b + 4.0 * c - d) * t
+        + 3.0 * (-a + 3.0 * b - 3.0 * c + d) * t2)
 }
 
 /// Draw an offscreen [`Graphics`](crate::graphics::Graphics) canvas at
@@ -1626,6 +2173,79 @@ mod tests {
         assert_eq!(frame.graphics[0].width, 64);
         assert_eq!(frame.graphics[0].height, 32);
         assert!(!frame.graphics[0].vertices.is_empty());
+    }
+
+    #[test]
+    fn new_primitives_emit_geometry() {
+        begin_frame();
+        no_stroke();
+        fill(255, 255, 255);
+        quad(0.0, 0.0, 10.0, 0.0, 12.0, 8.0, 2.0, 8.0);
+        let after_quad = take_frame_2d().vertices.len();
+        assert!(after_quad > 0);
+
+        begin_frame();
+        stroke(255, 255, 255);
+        no_fill();
+        arc(50.0, 50.0, 40.0, 40.0, 0.0, std::f32::consts::PI);
+        bezier(0.0, 0.0, 10.0, 20.0, 30.0, 20.0, 40.0, 0.0);
+        curve(0.0, 0.0, 10.0, 10.0, 30.0, 10.0, 40.0, 0.0);
+        assert!(!take_frame_2d().vertices.is_empty());
+    }
+
+    #[test]
+    fn shape_with_contour_fills_hole() {
+        begin_frame();
+        no_stroke();
+        fill(255, 255, 255);
+        // 100x100 square with a 50x50 hole: even-odd fill leaves the ring.
+        begin_shape();
+        vertex(0.0, 0.0);
+        vertex(100.0, 0.0);
+        vertex(100.0, 100.0);
+        vertex(0.0, 100.0);
+        begin_contour();
+        vertex(25.0, 25.0);
+        vertex(75.0, 25.0);
+        vertex(75.0, 75.0);
+        vertex(25.0, 75.0);
+        end_contour();
+        end_shape_close();
+        let frame = take_frame_2d();
+        assert!(!frame.vertices.is_empty());
+        // The hole's center must not be covered by any triangle.
+        let inside = |px: f32, py: f32| {
+            frame.vertices.chunks(3).any(|t| {
+                let s = |a: &Vertex, b: &Vertex| {
+                    (px - b.position[0]) * (a.position[1] - b.position[1])
+                        - (a.position[0] - b.position[0]) * (py - b.position[1])
+                };
+                let (d1, d2, d3) = (s(&t[0], &t[1]), s(&t[1], &t[2]), s(&t[2], &t[0]));
+                let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+                let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+                !(has_neg && has_pos)
+            })
+        };
+        assert!(inside(10.0, 10.0), "ring area must be filled");
+        assert!(!inside(50.0, 50.0), "hole must stay empty");
+    }
+
+    #[test]
+    fn curve_math_matches_endpoints() {
+        // Catmull-Rom passes through its inner anchors.
+        assert!((curve_point(0.0, 1.0, 2.0, 3.0, 0.0) - 1.0).abs() < 1e-5);
+        assert!((curve_point(0.0, 1.0, 2.0, 3.0, 1.0) - 2.0).abs() < 1e-5);
+        // Bezier hits its anchors.
+        assert!((bezier_point(1.0, 5.0, 9.0, 3.0, 0.0) - 1.0).abs() < 1e-5);
+        assert!((bezier_point(1.0, 5.0, 9.0, 3.0, 1.0) - 3.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shape_modes_resolve_boxes() {
+        assert_eq!(resolve_box(ShapeMode::Corner, 10.0, 20.0, 30.0, 40.0), (10.0, 20.0, 30.0, 40.0));
+        assert_eq!(resolve_box(ShapeMode::Corners, 10.0, 20.0, 40.0, 60.0), (10.0, 20.0, 30.0, 40.0));
+        assert_eq!(resolve_box(ShapeMode::Center, 25.0, 40.0, 30.0, 40.0), (10.0, 20.0, 30.0, 40.0));
+        assert_eq!(resolve_box(ShapeMode::Radius, 25.0, 40.0, 15.0, 20.0), (10.0, 20.0, 30.0, 40.0));
     }
 
     #[test]

@@ -217,7 +217,7 @@ impl Sim {
             no_stroke();
             fill_a(cr, cg, cb, 255);
             if let Some((sx, sy)) = project(agent.pos, mvp, w, h) {
-                ellipse(sx - 2.5, sy - 2.5, 5.0, 5.0);
+                circle(sx, sy, 5.0);
             }
             no_fill();
         }
