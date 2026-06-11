@@ -39,6 +39,26 @@ Scale the coordinate system:
 scale(sx, sy);
 ```
 
+Stroke weight is **not** scaled by transforms — it stays in canvas pixels,
+so outlines keep a consistent width under `scale()`.
+
+## Shear
+
+Skew along an axis by an angle in radians:
+
+```rust
+shear_x(angle);
+shear_y(angle);
+```
+
+## Reset
+
+Replace the current transform with the identity mid-frame:
+
+```rust
+reset_matrix();
+```
+
 ## Order matters
 
 Transforms apply in the order you call them. This is the same as Processing:
@@ -51,6 +71,21 @@ rect(-25.0, -25.0, 50.0, 50.0); // draw at origin
 pop();
 ```
 
-## Reset
+## Per-frame reset
 
-The transform resets to identity at the start of each frame, so there is no carry-over between frames.
+The transform resets to identity at the start of each frame, so there is no
+carry-over between frames.
+
+## Style stack
+
+`push()`/`pop()` manage the *transform* only (Processing's
+`pushMatrix`/`popMatrix`). For colors, weight, and modes there is a separate
+style stack:
+
+```rust
+push_style();
+stroke(255, 0, 0);
+stroke_weight(8.0);
+// ...
+pop_style();   // colors, weight, modes restored
+```

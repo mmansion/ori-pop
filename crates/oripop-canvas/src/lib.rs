@@ -3,8 +3,14 @@
 //! The 2D drawing API and generative field engine for ori-pop.
 //!
 //! ## Drawing API
-//! Import [`prelude`] and write Processing-style sketches:
-//! `size()`, `background()`, `stroke()`, `line()`, `ellipse()`, `run()`, etc.
+//! Import [`prelude`] and write Processing-style sketches. The core surface
+//! covers shapes/arcs/curves/custom shapes with contours, transforms and
+//! style stacks, RGB/HSB color with [`draw::Color`] + `lerp_color`, math /
+//! seeded random / Perlin noise ([`math`]), polled input plus registered
+//! event handlers, a persistent canvas (`background()` clears, otherwise
+//! content accumulates; translucent washes fade trails), offscreen
+//! [`graphics::Graphics`] canvases, and high-res PNG snapshots
+//! (`pixel_density` + `save_frame`).
 //!
 //! ## Geometry primitives
 //! [`Point`], [`Line`], [`Bezier`] — 2D primitives used by the field system.

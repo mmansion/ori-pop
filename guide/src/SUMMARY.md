@@ -11,7 +11,11 @@
 
 - [Colors & Background](./api/colors.md)
 - [Shapes & Primitives](./api/shapes.md)
+- [Curves](./api/curves.md)
 - [Transforms](./api/transforms.md)
+- [Math, Random & Noise](./api/math.md)
+- [Input, Events & Time](./api/input.md)
+- [Canvas, Persistence & Snapshots](./api/canvas.md)
 
 # Vision
 

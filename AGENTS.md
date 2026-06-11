@@ -85,7 +85,7 @@ cargo run -p oripop-studio -- project list
 cargo run -p oripop-studio -- bake --texture coral-stipple
 ```
 
-Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `2-primitives-demo`, `3-transform-demo`, `4-alpha-demo`, `5-forces-demo`, `6-interactive-demo`, `7-textured-3d-demo`, `8-lsystem-3d`, `9-curves-demo`, `10-curves-3d-demo`, `11-distribution-dial-demo`.
+Other sketch binaries are declared in [`sketches/Cargo.toml`](sketches/Cargo.toml), for example: `2-primitives-demo`, `3-transform-demo`, `4-alpha-demo`, `5-forces-demo`, `6-interactive-demo`, `7-textured-3d-demo`, `8-lsystem-3d`, `9-curves-demo`, `10-curves-3d-demo`, `11-distribution-dial-demo`, `12-graphics-demo`, `13-flowfield-trails`, `14-orbital-arcs`, `15-noise-blobs`, `16-scatter-brush`, `17-lsystem-maze`, `18-truchet-arcs`, `19-noise-contours`, `20-reaction-diffusion`.
 
 Build the guide locally (requires [mdBook](https://rust-lang.github.io/mdBook/)):
 

@@ -140,7 +140,14 @@ Full detail and first tasks: [`docs/studio/04-roadmap.md`](docs/studio/04-roadma
 
 ## 0d. `oripop-canvas` — Full Creative-Coding Surface
 
-**Status: planned (tiers locked 2026-06-10)**
+**Status: Tiers 0–1 done (2026-06-11); Tiers 2–3 planned**
+
+Landed beyond the tier list: persistent-canvas semantics (`background()`
+clears; otherwise content accumulates; translucent `background_a` washes),
+`pixel_density` supersampling, `save_frame` PNG snapshots, and registered
+event handlers (`on_mouse_*`, `on_key_*`). Demo sketches 12–20 exercise the
+surface (offscreen graphics, flowfields, arcs, shape contours, L-system
+growth, Truchet tiling, marching squares, Gray-Scott reaction-diffusion).
 
 The dot/stipple engines are one aesthetic, not the platform identity. To leave
 room for artistic growth, `oripop-canvas` grows to the full user-facing surface
