@@ -24,13 +24,18 @@ const W: f32 = 900.0;
 const H: f32 = 900.0;
 const MARGIN: f32 = 40.0;
 const ORDERS: [usize; 3] = [5, 6, 7];
-const FRAMES_TO_FILL: f32 = 540.0; // ~9s per pass at 60fps
-const HOLD_FRAMES: u32 = 150;      // pause on the finished maze
+/// Seconds each pass takes to draw, per order (at ~60fps).
+const PASS_SECONDS: [f32; 3] = [12.0, 16.0, 24.0];
+const HOLD_FRAMES: u32 = 180; // pause on the finished maze
 
 struct Growth {
     segments: Vec<[f32; 4]>,
+    /// Fully drawn segments.
     drawn: usize,
-    per_frame: usize,
+    /// Pen distance already drawn into the current segment.
+    dist_in_seg: f32,
+    /// Pen speed in pixels per frame.
+    speed: f32,
     order_idx: usize,
     hold: u32,
 }
@@ -107,8 +112,12 @@ fn start_pass(order_idx: usize) -> Growth {
     // Plotter paper.
     background(237, 232, 220);
     let segments = build_segments(ORDERS[order_idx]);
-    let per_frame = ((segments.len() as f32 / FRAMES_TO_FILL).ceil() as usize).max(2);
-    Growth { segments, drawn: 0, per_frame, order_idx, hold: HOLD_FRAMES }
+    let total_len: f32 = segments
+        .iter()
+        .map(|s| dist(s[0], s[1], s[2], s[3]))
+        .sum();
+    let speed = (total_len / (PASS_SECONDS[order_idx] * 60.0)).max(1.0);
+    Growth { segments, drawn: 0, dist_in_seg: 0.0, speed, order_idx, hold: HOLD_FRAMES }
 }
 
 /// Pen inks along the path: indigo -> crimson -> teal.
@@ -146,7 +155,9 @@ fn draw() {
             return;
         }
 
-        // Grow: draw only the new segments; the canvas keeps the rest.
+        // Move the pen a fixed distance this frame, drawing through as many
+        // (partial) segments as the budget covers — continuous pen motion,
+        // every line visibly traced. The canvas keeps everything drawn.
         let order = ORDERS[growth.order_idx];
         let weight = match order {
             5 => 6.0,
@@ -156,13 +167,32 @@ fn draw() {
         stroke_cap(StrokeCap::Round);
         stroke_weight(weight);
 
-        let end = (growth.drawn + growth.per_frame).min(total);
-        for i in growth.drawn..end {
-            let k = i as f32 / total as f32;
-            stroke_color(palette(k));
-            let [x1, y1, x2, y2] = growth.segments[i];
-            line(x1, y1, x2, y2);
+        let mut budget = growth.speed;
+        while budget > 0.0 && growth.drawn < total {
+            let [x1, y1, x2, y2] = growth.segments[growth.drawn];
+            let seg_len = dist(x1, y1, x2, y2).max(1e-4);
+            let from_t = growth.dist_in_seg / seg_len;
+            let remaining = seg_len - growth.dist_in_seg;
+
+            stroke_color(palette(growth.drawn as f32 / total as f32));
+            if budget >= remaining {
+                // Finish this segment and roll into the next.
+                line(lerp(x1, x2, from_t), lerp(y1, y2, from_t), x2, y2);
+                budget -= remaining;
+                growth.drawn += 1;
+                growth.dist_in_seg = 0.0;
+            } else {
+                // Pen stops mid-segment this frame.
+                let to_t = (growth.dist_in_seg + budget) / seg_len;
+                line(
+                    lerp(x1, x2, from_t),
+                    lerp(y1, y2, from_t),
+                    lerp(x1, x2, to_t),
+                    lerp(y1, y2, to_t),
+                );
+                growth.dist_in_seg += budget;
+                budget = 0.0;
+            }
         }
-        growth.drawn = end;
     });
 }
