@@ -74,8 +74,8 @@ name = "16-scatter-brush"
 path = "16-scatter-brush.rs"
 
 [[bin]]
-name = "17-lsystem-garden"
-path = "17-lsystem-garden.rs"
+name = "17-lsystem-maze"
+path = "17-lsystem-maze.rs"
 
 [[bin]]
 name = "18-truchet-arcs"

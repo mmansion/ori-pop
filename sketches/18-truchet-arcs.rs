@@ -54,13 +54,14 @@ fn draw() {
             for col in 0..COLS {
                 let tile = &mut tiles[row * COLS + col];
 
-                // Occasionally start a flip; animate it as a quarter turn.
-                if !tile.flipping && random(1.0) < 0.0006 {
+                // Rarely start a flip; animate it as a slow quarter turn so
+                // at most a couple of tiles are ever in motion.
+                if !tile.flipping && random(1.0) < 0.0001 {
                     tile.flipping = true;
                 }
                 if tile.flipping {
                     let target = if tile.orient < 0.5 { 1.0 } else { 0.0 };
-                    tile.orient += (target - tile.orient) * 0.08;
+                    tile.orient += (target - tile.orient) * 0.04;
                     if (tile.orient - target).abs() < 0.01 {
                         tile.orient = target;
                         tile.flipping = false;
@@ -77,7 +78,9 @@ fn draw() {
 
                 no_fill();
                 stroke_color(c);
-                stroke_weight(map((t + k * 6.0).sin(), -1.0, 1.0, 3.0, 7.0));
+                // Steady weight, varying only across space — the motion
+                // should come from the loops and flips, not from throbbing.
+                stroke_weight(3.5 + k * 2.0);
                 stroke_cap(StrokeCap::Round);
 
                 // Two quarter arcs centered on opposite tile corners.
