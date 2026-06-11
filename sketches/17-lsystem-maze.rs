@@ -56,47 +56,66 @@ fn expand_hilbert(order: usize) -> String {
     s
 }
 
-/// Walk the expanded string with a turtle, returning scaled segments.
+/// Walk the expanded string with a turtle in unit steps, then normalize the
+/// path's bounding box onto the canvas — so the curve always fills the
+/// frame regardless of where the turtle wanders.
 fn build_segments(order: usize) -> Vec<[f32; 4]> {
-    let cells = (1usize << order) - 1; // 2^order - 1 steps per axis
-    let span = (W.min(H) - MARGIN * 2.0) / cells as f32;
-    let ox = (W - cells as f32 * span) * 0.5;
-    let oy = (H - cells as f32 * span) * 0.5;
+    let (mut x, mut y) = (0.0f32, 0.0f32);
+    let (mut dx, mut dy) = (1.0f32, 0.0f32);
 
-    let (mut x, mut y) = (ox, oy);
-    let (mut dx, mut dy) = (1.0f32, 0.0f32); // heading: +x
-
-    let mut segments = Vec::with_capacity(1 << (2 * order));
+    let mut points = vec![[0.0f32, 0.0f32]];
     for c in expand_hilbert(order).chars() {
         match c {
             'F' => {
-                let nx = x + dx * span;
-                let ny = y + dy * span;
-                segments.push([x, y, nx, ny]);
-                x = nx;
-                y = ny;
+                x += dx;
+                y += dy;
+                points.push([x, y]);
             }
-            // y grows down, so this pair is a consistent left/right swap.
             '+' => (dx, dy) = (dy, -dx),
             '-' => (dx, dy) = (-dy, dx),
             _ => {}
         }
     }
-    segments
+
+    // Fit the path's bounds into the canvas, centered, uniform scale.
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for p in &points {
+        min_x = min_x.min(p[0]);
+        min_y = min_y.min(p[1]);
+        max_x = max_x.max(p[0]);
+        max_y = max_y.max(p[1]);
+    }
+    let extent = (max_x - min_x).max(max_y - min_y).max(1.0);
+    let scale = (W.min(H) - MARGIN * 2.0) / extent;
+    let ox = (W - (max_x - min_x) * scale) * 0.5 - min_x * scale;
+    let oy = (H - (max_y - min_y) * scale) * 0.5 - min_y * scale;
+
+    points
+        .windows(2)
+        .map(|w| {
+            [
+                w[0][0] * scale + ox,
+                w[0][1] * scale + oy,
+                w[1][0] * scale + ox,
+                w[1][1] * scale + oy,
+            ]
+        })
+        .collect()
 }
 
 fn start_pass(order_idx: usize) -> Growth {
-    background(12, 12, 16);
+    // Plotter paper.
+    background(237, 232, 220);
     let segments = build_segments(ORDERS[order_idx]);
     let per_frame = ((segments.len() as f32 / FRAMES_TO_FILL).ceil() as usize).max(2);
     Growth { segments, drawn: 0, per_frame, order_idx, hold: HOLD_FRAMES }
 }
 
-/// Path color along the curve: ember -> magenta -> ice.
+/// Pen inks along the path: indigo -> crimson -> teal.
 fn palette(k: f32) -> Color {
-    let a = Color::rgb(245, 160, 70);
-    let b = Color::rgb(205, 80, 160);
-    let c = Color::rgb(120, 200, 245);
+    let a = Color::rgb(45, 60, 140);
+    let b = Color::rgb(170, 45, 70);
+    let c = Color::rgb(20, 115, 105);
     if k < 0.5 {
         lerp_color(a, b, k * 2.0)
     } else {
