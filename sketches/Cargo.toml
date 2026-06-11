@@ -56,3 +56,19 @@ path = "11-distribution-dial-demo.rs"
 [[bin]]
 name = "12-graphics-demo"
 path = "12-graphics-demo.rs"
+
+[[bin]]
+name = "13-flowfield-trails"
+path = "13-flowfield-trails.rs"
+
+[[bin]]
+name = "14-orbital-arcs"
+path = "14-orbital-arcs.rs"
+
+[[bin]]
+name = "15-noise-blobs"
+path = "15-noise-blobs.rs"
+
+[[bin]]
+name = "16-scatter-brush"
+path = "16-scatter-brush.rs"

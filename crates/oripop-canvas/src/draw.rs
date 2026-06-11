@@ -158,6 +158,8 @@ pub(crate) struct GraphicsFrame {
 /// Everything the windowed host needs to render one frame.
 pub(crate) struct Frame2D {
     pub bg: wgpu::Color,
+    /// Whether `background()` was called: clear the persistent canvas.
+    pub clear: bool,
     pub vertices: Vec<Vertex>,
     pub runs: Vec<DrawRun>,
     pub graphics: Vec<GraphicsFrame>,
@@ -481,6 +483,9 @@ pub(crate) struct Recorder {
     pub(crate) vertices: Vec<Vertex>,
     pub(crate) runs: Vec<DrawRun>,
     pub(crate) bg: wgpu::Color,
+    /// True when `background()` was called this frame: the canvas clears.
+    /// When false, previous frame content persists (Processing semantics).
+    pub(crate) bg_set: bool,
     matrix: [f32; 6],
     matrix_stack: Vec<[f32; 6]>,
     style_stack: Vec<DrawState>,
@@ -496,6 +501,7 @@ impl Recorder {
             vertices: Vec::new(),
             runs: Vec::new(),
             bg: wgpu::Color::BLACK,
+            bg_set: false,
             matrix: IDENTITY,
             matrix_stack: Vec::new(),
             style_stack: Vec::new(),
@@ -515,6 +521,7 @@ impl Recorder {
     /// Per-frame reset: clear geometry and the transform/style stacks.
     pub(crate) fn reset(&mut self) {
         self.clear();
+        self.bg_set = false;
         self.matrix = IDENTITY;
         self.matrix_stack.clear();
         self.style_stack.clear();
@@ -544,6 +551,7 @@ impl Recorder {
             b: c.b as f64 / 255.0,
             a: c.a as f64 / 255.0,
         };
+        self.bg_set = true;
     }
 
     pub(crate) fn set_background_a(&mut self, c1: u8, c2: u8, c3: u8, a: u8) {
@@ -1611,6 +1619,15 @@ struct Gpu {
     /// Pipeline targeting offscreen `Graphics` textures.
     gfx_pipeline: wgpu::RenderPipeline,
     gfx_targets: std::collections::HashMap<u64, GfxTarget>,
+    /// Persistent accumulation canvas: cleared only when `background()` is
+    /// called, otherwise content carries across frames (Processing
+    /// semantics). Blitted to the swapchain every frame.
+    canvas_color_view: Option<wgpu::TextureView>,
+    canvas_msaa_view: Option<wgpu::TextureView>,
+    canvas_bind: Option<wgpu::BindGroup>,
+    canvas_size: (u32, u32),
+    canvas_init: bool,
+    blit_vbuf: Option<wgpu::Buffer>,
 }
 
 fn create_msaa_texture(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32, samples: u32) -> Option<wgpu::TextureView> {
@@ -1655,6 +1672,95 @@ impl Gpu {
 
     fn reconfigure(&mut self) {
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// (Re)create the persistent canvas textures when the window size
+    /// changes. Content is lost on resize (the next frame redraws it).
+    fn ensure_canvas_targets(&mut self) {
+        let size = (self.config.width, self.config.height);
+        if self.canvas_size == size && self.canvas_color_view.is_some() {
+            return;
+        }
+        let extent = wgpu::Extent3d {
+            width: size.0.max(1),
+            height: size.1.max(1),
+            depth_or_array_layers: 1,
+        };
+        let color = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("oripop canvas color"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: GFX_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let msaa = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("oripop canvas msaa"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: GFX_MSAA,
+            dimension: wgpu::TextureDimension::D2,
+            format: GFX_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let msaa_view = msaa.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("oripop canvas blit bind"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&color_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+        self.canvas_color_view = Some(color_view);
+        self.canvas_msaa_view = Some(msaa_view);
+        self.canvas_bind = Some(bind);
+        self.canvas_size = size;
+        self.canvas_init = false;
+    }
+
+    /// Upload the fullscreen quad that blits the canvas to the window.
+    fn write_blit_quad(&mut self) {
+        let lw = (self.config.width as f64 / self.scale_factor) as f32;
+        let lh = (self.config.height as f64 / self.scale_factor) as f32;
+        let v = |x: f32, y: f32, u: f32, vv: f32| Vertex {
+            position: [x, y],
+            color: [1.0, 1.0, 1.0, 1.0],
+            uv: [u, vv],
+            tex: 1.0,
+        };
+        let quad = [
+            v(0.0, 0.0, 0.0, 0.0),
+            v(lw, 0.0, 1.0, 0.0),
+            v(lw, lh, 1.0, 1.0),
+            v(0.0, 0.0, 0.0, 0.0),
+            v(lw, lh, 1.0, 1.0),
+            v(0.0, lh, 0.0, 1.0),
+        ];
+        if self.blit_vbuf.is_none() {
+            self.blit_vbuf = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("oripop blit quad"),
+                size: (std::mem::size_of::<Vertex>() * 6) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+        }
+        self.queue
+            .write_buffer(self.blit_vbuf.as_ref().unwrap(), 0, bytemuck::cast_slice(&quad));
     }
 
     /// (Re)create the GPU target for one offscreen `Graphics` canvas and
@@ -1777,16 +1883,21 @@ impl Gpu {
         let output      = self.surface.get_current_texture()?;
         let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Prepare offscreen graphics targets (mutable phase, before any
-        // long-lived immutable borrows of self).
+        // ── Mutable phase: prepare all GPU resources ──
         for gf in &frame.graphics {
             self.prepare_gfx_target(gf);
         }
+        self.ensure_canvas_targets();
+        self.write_blit_quad();
 
-        let (target_view, resolve_target) = match &self.msaa_view {
-            Some(msaa) => (msaa, Some(&surface_view)),
-            None       => (&surface_view, None),
+        // Clear the canvas when background() was called, and always on a
+        // fresh canvas texture (its content is undefined).
+        let canvas_load = if frame.clear || !self.canvas_init {
+            wgpu::LoadOp::Clear(frame.bg)
+        } else {
+            wgpu::LoadOp::Load
         };
+        self.canvas_init = true;
 
         // Upload main vertices into the persistent buffer.
         let bytes = bytemuck::cast_slice::<Vertex, u8>(&frame.vertices);
@@ -1806,11 +1917,12 @@ impl Gpu {
             self.queue.write_buffer(self.vertex_buf.as_ref().unwrap(), 0, bytes);
         }
 
+        // ── Encode phase (immutable borrows only) ──
         let mut encoder = self.device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("oripop render") },
         );
 
-        // Offscreen graphics passes (before the main pass samples them).
+        // Offscreen graphics passes (before the canvas pass samples them).
         for gf in &frame.graphics {
             let Some(target) = self.gfx_targets.get(&gf.id) else { continue };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1838,15 +1950,15 @@ impl Gpu {
             }
         }
 
-        // Main pass: replay draw runs, switching texture bind groups.
+        // Canvas pass: replay draw runs onto the persistent canvas.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("oripop pass"),
+                label: Some("oripop canvas pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view:           target_view,
-                    resolve_target,
+                    view:           self.canvas_msaa_view.as_ref().unwrap(),
+                    resolve_target: Some(self.canvas_color_view.as_ref().unwrap()),
                     ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(frame.bg),
+                        load:  canvas_load,
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -1857,7 +1969,7 @@ impl Gpu {
             });
 
             if has_verts {
-                pass.set_pipeline(&self.pipeline);
+                pass.set_pipeline(&self.gfx_pipeline);
                 pass.set_vertex_buffer(0, self.vertex_buf.as_ref().unwrap().slice(..));
                 for run in &frame.runs {
                     let bind = if run.tex == 0 {
@@ -1872,6 +1984,33 @@ impl Gpu {
                     pass.draw(run.start..run.start + run.count, 0..1);
                 }
             }
+        }
+
+        // Blit pass: present the canvas to the window surface.
+        {
+            let (target_view, resolve_target) = match &self.msaa_view {
+                Some(msaa) => (msaa, Some(&surface_view)),
+                None       => (&surface_view, None),
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("oripop blit pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view:           target_view,
+                    resolve_target,
+                    ops: wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes:        None,
+                occlusion_query_set:     None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, self.canvas_bind.as_ref().unwrap(), &[]);
+            pass.set_vertex_buffer(0, self.blit_vbuf.as_ref().unwrap().slice(..));
+            pass.draw(0..6, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -2043,6 +2182,12 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         vertex_buf_cap: 0,
         gfx_pipeline,
         gfx_targets: std::collections::HashMap::new(),
+        canvas_color_view: None,
+        canvas_msaa_view: None,
+        canvas_bind: None,
+        canvas_size: (0, 0),
+        canvas_init: false,
+        blit_vbuf: None,
     }
 }
 
@@ -2190,6 +2335,7 @@ pub fn take_2d_vertices() -> (wgpu::Color, Vec<u8>) {
 pub(crate) fn take_frame_2d() -> Frame2D {
     with_ctx(|ctx| Frame2D {
         bg: ctx.rec.bg,
+        clear: ctx.rec.bg_set,
         vertices: std::mem::take(&mut ctx.rec.vertices),
         runs: std::mem::take(&mut ctx.rec.runs),
         graphics: std::mem::take(&mut ctx.graphics_frames),
