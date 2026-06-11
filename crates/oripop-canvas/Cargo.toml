@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 bytemuck.workspace = true
 glam.workspace = true
+image.workspace = true
 log.workspace = true
 lyon.workspace = true
 pollster.workspace = true

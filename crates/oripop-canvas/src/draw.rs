@@ -160,6 +160,8 @@ pub(crate) struct Frame2D {
     pub bg: wgpu::Color,
     /// Whether `background()` was called: clear the persistent canvas.
     pub clear: bool,
+    /// Canvas supersampling factor.
+    pub density: u32,
     pub vertices: Vec<Vertex>,
     pub runs: Vec<DrawRun>,
     pub graphics: Vec<GraphicsFrame>,
@@ -1072,6 +1074,19 @@ pub enum MouseButton {
     Center,
 }
 
+/// Registered sketch event handlers (Processing's mousePressed()/keyPressed()
+/// functions, as explicit registrations).
+#[derive(Default, Copy, Clone)]
+struct Handlers {
+    mouse_pressed: Option<fn()>,
+    mouse_released: Option<fn()>,
+    mouse_moved: Option<fn()>,
+    mouse_dragged: Option<fn()>,
+    mouse_wheel: Option<fn(f32)>,
+    key_pressed: Option<fn()>,
+    key_released: Option<fn()>,
+}
+
 struct Context {
     width: u32,
     height: u32,
@@ -1096,6 +1111,11 @@ struct Context {
     key_code: char,
     start_time: std::time::Instant,
     target_fps: Option<f32>,
+    handlers: Handlers,
+    /// Canvas supersampling factor for high-resolution output.
+    density: u32,
+    /// Snapshot request: resolved path, taken after the next render.
+    pending_save: Option<std::path::PathBuf>,
 }
 
 impl Context {
@@ -1121,6 +1141,9 @@ impl Context {
             key_code: '\0',
             start_time: std::time::Instant::now(),
             target_fps: None,
+            handlers: Handlers::default(),
+            density: 1,
+            pending_save: None,
         }
     }
 
@@ -1348,6 +1371,89 @@ pub fn millis() -> u64 {
 /// at display rate (vsync).
 pub fn frame_rate(fps: f32) {
     with_ctx(|ctx| ctx.target_fps = if fps > 0.0 { Some(fps) } else { None });
+}
+
+// ── Event handlers ──────────────────────────────────────
+//
+// The classic creative-coding event functions. Rust cannot discover magic
+// global functions like Processing's `mousePressed()`, so handlers are
+// registered explicitly (call these in `main()` before `run`).
+
+/// Register a handler called when a mouse button is pressed.
+pub fn on_mouse_pressed(f: fn()) {
+    with_ctx(|ctx| ctx.handlers.mouse_pressed = Some(f));
+}
+
+/// Register a handler called when a mouse button is released.
+pub fn on_mouse_released(f: fn()) {
+    with_ctx(|ctx| ctx.handlers.mouse_released = Some(f));
+}
+
+/// Register a handler called when the mouse moves with no button held.
+pub fn on_mouse_moved(f: fn()) {
+    with_ctx(|ctx| ctx.handlers.mouse_moved = Some(f));
+}
+
+/// Register a handler called when the mouse moves with a button held.
+pub fn on_mouse_dragged(f: fn()) {
+    with_ctx(|ctx| ctx.handlers.mouse_dragged = Some(f));
+}
+
+/// Register a handler called on scroll; receives the wheel delta in lines.
+pub fn on_mouse_wheel(f: fn(f32)) {
+    with_ctx(|ctx| ctx.handlers.mouse_wheel = Some(f));
+}
+
+/// Register a handler called when a key is pressed ([`key`] holds the char).
+pub fn on_key_pressed(f: fn()) {
+    with_ctx(|ctx| ctx.handlers.key_pressed = Some(f));
+}
+
+/// Register a handler called when a key is released.
+pub fn on_key_released(f: fn()) {
+    with_ctx(|ctx| ctx.handlers.key_released = Some(f));
+}
+
+// ── Snapshots (baking) ──────────────────────────────────
+
+/// Canvas supersampling factor (1–4, p5's `pixelDensity`). The persistent
+/// canvas renders at `density` x the window's physical resolution, so
+/// [`save_frame`] exports at high resolution while the window shows a
+/// downsampled view. Call before [`run`]; high values cost GPU memory.
+pub fn pixel_density(density: u32) {
+    with_ctx(|ctx| ctx.density = density.clamp(1, 4));
+}
+
+/// Save a snapshot of the canvas (everything currently visible, including
+/// accumulated/persistent content) as a PNG after this frame finishes.
+///
+/// Runs of `#` in the file name are replaced with the zero-padded frame
+/// number, Processing-style: `save_frame("out/frame-####.png")`.
+/// Resolution = window physical pixels x [`pixel_density`].
+pub fn save_frame(path: &str) {
+    with_ctx(|ctx| {
+        let resolved = expand_frame_pattern(path, ctx.frame_count);
+        ctx.pending_save = Some(std::path::PathBuf::from(resolved));
+    });
+}
+
+/// Replace each run of '#' with the zero-padded frame number.
+fn expand_frame_pattern(pattern: &str, frame: u64) -> String {
+    let mut out = String::with_capacity(pattern.len() + 8);
+    let mut chars = pattern.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '#' {
+            let mut width = 1;
+            while chars.peek() == Some(&'#') {
+                chars.next();
+                width += 1;
+            }
+            out.push_str(&format!("{frame:0width$}"));
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Push current transform onto the stack. Pair with pop().
@@ -1664,8 +1770,13 @@ struct Gpu {
     canvas_msaa_view: Option<wgpu::TextureView>,
     canvas_bind: Option<wgpu::BindGroup>,
     canvas_size: (u32, u32),
+    canvas_density: u32,
+    /// Actual canvas texture extent (size x density).
+    canvas_tex_size: (u32, u32),
     canvas_init: bool,
     blit_vbuf: Option<wgpu::Buffer>,
+    /// Pipeline for snapshotting the canvas into an Rgba8 texture.
+    save_pipeline: wgpu::RenderPipeline,
 }
 
 fn create_msaa_texture(device: &wgpu::Device, format: wgpu::TextureFormat, w: u32, h: u32, samples: u32) -> Option<wgpu::TextureView> {
@@ -1712,16 +1823,20 @@ impl Gpu {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// (Re)create the persistent canvas textures when the window size
-    /// changes. Content is lost on resize (the next frame redraws it).
-    fn ensure_canvas_targets(&mut self) {
+    /// (Re)create the persistent canvas textures when the window size or
+    /// density changes. Content is lost on resize (the next frame redraws it).
+    fn ensure_canvas_targets(&mut self, density: u32) {
         let size = (self.config.width, self.config.height);
-        if self.canvas_size == size && self.canvas_color_view.is_some() {
+        if self.canvas_size == size
+            && self.canvas_density == density
+            && self.canvas_color_view.is_some()
+        {
             return;
         }
+        let tex_size = (size.0.max(1) * density, size.1.max(1) * density);
         let extent = wgpu::Extent3d {
-            width: size.0.max(1),
-            height: size.1.max(1),
+            width: tex_size.0,
+            height: tex_size.1,
             depth_or_array_layers: 1,
         };
         let color = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1768,7 +1883,113 @@ impl Gpu {
         self.canvas_msaa_view = Some(msaa_view);
         self.canvas_bind = Some(bind);
         self.canvas_size = size;
+        self.canvas_density = density;
+        self.canvas_tex_size = tex_size;
         self.canvas_init = false;
+    }
+
+    /// Snapshot the persistent canvas into a PNG at full canvas-texture
+    /// resolution (window physical pixels x pixel_density).
+    fn save_canvas_png(&mut self, path: &std::path::Path) -> Result<(), String> {
+        if self.canvas_color_view.is_none() {
+            return Err("canvas not initialized".into());
+        }
+        let (w, h) = self.canvas_tex_size;
+
+        // Convert the float canvas to Rgba8 via a save pass (the hardware
+        // handles sRGB encoding), then read it back.
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("oripop save target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("oripop save") });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("oripop save pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.save_pipeline);
+            pass.set_bind_group(0, self.canvas_bind.as_ref().unwrap(), &[]);
+            pass.set_vertex_buffer(0, self.blit_vbuf.as_ref().unwrap().slice(..));
+            pass.draw(0..6, 0..1);
+        }
+
+        let bytes_per_row_unpadded = w * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let bytes_per_row = bytes_per_row_unpadded.div_ceil(align) * align;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("oripop save readback"),
+            size: (bytes_per_row * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = readback.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| e.to_string())?;
+
+        let view = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((bytes_per_row_unpadded * h) as usize);
+        for row in 0..h {
+            let start = (row * bytes_per_row) as usize;
+            pixels.extend_from_slice(&view[start..start + bytes_per_row_unpadded as usize]);
+        }
+        drop(view);
+        readback.unmap();
+
+        // The canvas is an opaque backbuffer; export fully opaque.
+        for px in pixels.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+        }
+        image::save_buffer(path, &pixels, w, h, image::ColorType::Rgba8)
+            .map_err(|e| e.to_string())
     }
 
     /// Upload the fullscreen quad that blits the canvas to the window.
@@ -1925,7 +2146,7 @@ impl Gpu {
         for gf in &frame.graphics {
             self.prepare_gfx_target(gf);
         }
-        self.ensure_canvas_targets();
+        self.ensure_canvas_targets(frame.density);
         self.write_blit_quad();
 
         // Clear the canvas when background() was called, and always on a
@@ -2205,6 +2426,12 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         make_pipeline("oripop graphics pipeline", GFX_FORMAT, GFX_MSAA, wgpu::BlendState::ALPHA_BLENDING);
     let canvas_pipeline =
         make_pipeline("oripop canvas pipeline", CANVAS_FORMAT, GFX_MSAA, wgpu::BlendState::ALPHA_BLENDING);
+    let save_pipeline = make_pipeline(
+        "oripop save pipeline",
+        wgpu::TextureFormat::Rgba8UnormSrgb,
+        1,
+        wgpu::BlendState::REPLACE,
+    );
 
     let msaa_view = create_msaa_texture(&device, format, phys_w, phys_h, msaa_samples);
 
@@ -2234,8 +2461,11 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         canvas_msaa_view: None,
         canvas_bind: None,
         canvas_size: (0, 0),
+        canvas_density: 0,
+        canvas_tex_size: (0, 0),
         canvas_init: false,
         blit_vbuf: None,
+        save_pipeline,
     }
 }
 
@@ -2384,6 +2614,7 @@ pub(crate) fn take_frame_2d() -> Frame2D {
     with_ctx(|ctx| Frame2D {
         bg: ctx.rec.bg,
         clear: ctx.rec.bg_set,
+        density: ctx.density,
         vertices: std::mem::take(&mut ctx.rec.vertices),
         runs: std::mem::take(&mut ctx.rec.runs),
         graphics: std::mem::take(&mut ctx.graphics_frames),
@@ -2485,7 +2716,15 @@ impl ApplicationHandler for Runner2D {
                 let frame = take_frame_2d();
 
                 match gpu.render(&frame) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        // Snapshot request (save_frame) after a good frame.
+                        if let Some(path) = with_ctx(|ctx| ctx.pending_save.take()) {
+                            match gpu.save_canvas_png(&path) {
+                                Ok(()) => eprintln!("saved {}", path.display()),
+                                Err(e) => log::error!("save_frame failed: {e}"),
+                            }
+                        }
+                    }
                     Err(wgpu::SurfaceError::Lost) => {
                         gpu.reconfigure();
                         window.request_redraw();
@@ -2502,27 +2741,42 @@ impl ApplicationHandler for Runner2D {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                with_ctx(|ctx| {
+                let handler = with_ctx(|ctx| {
                     ctx.mouse_x = position.x as f32 / gpu.scale_factor as f32;
                     ctx.mouse_y = position.y as f32 / gpu.scale_factor as f32;
+                    if ctx.mouse_pressed {
+                        ctx.handlers.mouse_dragged
+                    } else {
+                        ctx.handlers.mouse_moved
+                    }
                 });
+                if let Some(f) = handler {
+                    f();
+                }
                 if !with_ctx(|ctx| ctx.continuous_redraw) {
                     window.request_redraw();
                 }
             }
 
             WindowEvent::MouseInput { state, button, .. } => {
-                with_ctx(|ctx| {
-                    ctx.mouse_pressed = state == ElementState::Pressed;
-                    if state == ElementState::Pressed {
+                let pressed = state == ElementState::Pressed;
+                let handler = with_ctx(|ctx| {
+                    ctx.mouse_pressed = pressed;
+                    if pressed {
                         ctx.mouse_button = match button {
                             winit::event::MouseButton::Left => Some(MouseButton::Left),
                             winit::event::MouseButton::Right => Some(MouseButton::Right),
                             winit::event::MouseButton::Middle => Some(MouseButton::Center),
                             _ => None,
                         };
+                        ctx.handlers.mouse_pressed
+                    } else {
+                        ctx.handlers.mouse_released
                     }
                 });
+                if let Some(f) = handler {
+                    f();
+                }
                 if !with_ctx(|ctx| ctx.continuous_redraw) {
                     window.request_redraw();
                 }
@@ -2533,7 +2787,13 @@ impl ApplicationHandler for Runner2D {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => y,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 20.0,
                 };
-                with_ctx(|ctx| ctx.wheel_accum += lines);
+                let handler = with_ctx(|ctx| {
+                    ctx.wheel_accum += lines;
+                    ctx.handlers.mouse_wheel
+                });
+                if let Some(f) = handler {
+                    f(lines);
+                }
                 if !with_ctx(|ctx| ctx.continuous_redraw) {
                     window.request_redraw();
                 }
@@ -2541,7 +2801,7 @@ impl ApplicationHandler for Runner2D {
 
             WindowEvent::KeyboardInput { event: key_event, .. } => {
                 let pressed = key_event.state == ElementState::Pressed;
-                with_ctx(|ctx| {
+                let handler = with_ctx(|ctx| {
                     ctx.key_pressed = pressed;
                     if pressed {
                         match &key_event.logical_key {
@@ -2555,8 +2815,14 @@ impl ApplicationHandler for Runner2D {
                             }
                             _ => {}
                         }
+                        ctx.handlers.key_pressed
+                    } else {
+                        ctx.handlers.key_released
                     }
                 });
+                if let Some(f) = handler {
+                    f();
+                }
                 if !with_ctx(|ctx| ctx.continuous_redraw) {
                     window.request_redraw();
                 }
@@ -2730,6 +2996,13 @@ mod tests {
         assert_eq!(resolve_box(ShapeMode::Corners, 10.0, 20.0, 40.0, 60.0), (10.0, 20.0, 30.0, 40.0));
         assert_eq!(resolve_box(ShapeMode::Center, 25.0, 40.0, 30.0, 40.0), (10.0, 20.0, 30.0, 40.0));
         assert_eq!(resolve_box(ShapeMode::Radius, 25.0, 40.0, 15.0, 20.0), (10.0, 20.0, 30.0, 40.0));
+    }
+
+    #[test]
+    fn frame_pattern_expands_hashes() {
+        assert_eq!(expand_frame_pattern("out/frame-####.png", 7), "out/frame-0007.png");
+        assert_eq!(expand_frame_pattern("a#b", 12), "a12b");
+        assert_eq!(expand_frame_pattern("plain.png", 3), "plain.png");
     }
 
     #[test]

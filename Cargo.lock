@@ -1792,6 +1792,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glam",
+ "image",
  "log",
  "lyon",
  "pollster",

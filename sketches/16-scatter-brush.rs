@@ -7,6 +7,7 @@
 //! - Drag with the right button: dark eraser-ish strokes.
 //! - Scroll wheel: brush radius.
 //! - Press 'c': clear the canvas.
+//! - Press 's': save a high-res snapshot (pixel_density 2) as PNG.
 
 use std::cell::RefCell;
 
@@ -21,9 +22,17 @@ thread_local! {
 
 fn main() {
     size(W as u32, H as u32);
-    title("16-scatter-brush — drag to paint, wheel for size, 'c' clears");
+    title("16-scatter-brush — drag paints, wheel sizes, 'c' clears, 's' saves");
     smooth(4);
+    pixel_density(2); // canvas renders at 2x: snapshots come out print-ready
+    on_key_pressed(handle_key);
     run(draw);
+}
+
+fn handle_key() {
+    if key() == 's' {
+        save_frame("snapshots/scatter-####.png");
+    }
 }
 
 fn draw() {
