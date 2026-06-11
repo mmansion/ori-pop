@@ -46,7 +46,7 @@ fn draw() {
 
     // p5-style translucent background: blends a wash instead of clearing,
     // so old strokes sink away gradually. Lower alpha = longer trails.
-    background_a(8, 8, 14, 10);
+    background_a(8, 8, 14, 5);
 
     color_mode(ColorMode::Hsb);
     PARTICLES.with(|p| {

@@ -72,3 +72,19 @@ path = "15-noise-blobs.rs"
 [[bin]]
 name = "16-scatter-brush"
 path = "16-scatter-brush.rs"
+
+[[bin]]
+name = "17-lsystem-garden"
+path = "17-lsystem-garden.rs"
+
+[[bin]]
+name = "18-truchet-arcs"
+path = "18-truchet-arcs.rs"
+
+[[bin]]
+name = "19-noise-contours"
+path = "19-noise-contours.rs"
+
+[[bin]]
+name = "20-reaction-diffusion"
+path = "20-reaction-diffusion.rs"
