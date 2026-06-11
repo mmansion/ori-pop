@@ -22,7 +22,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::draw::{ArcMode, GraphicsFrame, Recorder, ShapeMode, StrokeCap, StrokeJoin};
+use crate::draw::{
+    ArcMode, Color, ColorMode, GraphicsFrame, Recorder, ShapeMode, StrokeCap, StrokeJoin,
+};
 
 /// Ids start at 1; 0 is the solid-color sentinel in draw runs.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -228,5 +230,64 @@ impl Graphics {
 
     pub fn stroke_join(&mut self, join: StrokeJoin) {
         self.rec.set_stroke_join(join);
+    }
+
+    pub fn color_mode(&mut self, mode: ColorMode) {
+        self.rec.set_color_mode(mode);
+    }
+
+    /// Build a [`Color`] under this canvas's color mode.
+    pub fn color(&self, c1: u8, c2: u8, c3: u8) -> Color {
+        self.rec.make_color(c1, c2, c3, 255)
+    }
+
+    pub fn color_a(&self, c1: u8, c2: u8, c3: u8, a: u8) -> Color {
+        self.rec.make_color(c1, c2, c3, a)
+    }
+
+    pub fn fill_color(&mut self, c: Color) {
+        self.rec.set_fill_color(c);
+    }
+
+    pub fn stroke_color(&mut self, c: Color) {
+        self.rec.set_stroke_color(c);
+    }
+
+    pub fn background_color(&mut self, c: Color) {
+        self.rec.clear();
+        self.rec.set_background_color(c);
+    }
+
+    pub fn fill_gray(&mut self, g: u8) {
+        self.rec.set_fill_color(Color::rgb(g, g, g));
+    }
+
+    pub fn stroke_gray(&mut self, g: u8) {
+        self.rec.set_stroke_color(Color::rgb(g, g, g));
+    }
+
+    pub fn background_gray(&mut self, g: u8) {
+        self.rec.clear();
+        self.rec.set_background_color(Color::rgb(g, g, g));
+    }
+
+    pub fn shear_x(&mut self, angle: f32) {
+        self.rec.shear_x(angle);
+    }
+
+    pub fn shear_y(&mut self, angle: f32) {
+        self.rec.shear_y(angle);
+    }
+
+    pub fn reset_matrix(&mut self) {
+        self.rec.reset_matrix();
+    }
+
+    pub fn push_style(&mut self) {
+        self.rec.push_style();
+    }
+
+    pub fn pop_style(&mut self) {
+        self.rec.pop_style();
     }
 }

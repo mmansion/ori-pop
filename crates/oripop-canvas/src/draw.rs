@@ -232,8 +232,84 @@ pub enum StrokeJoin {
     Round,
 }
 
+/// How `fill`/`stroke`/`background` channel arguments are interpreted
+/// (Processing's `colorMode()`). All channels stay 0–255.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ColorMode {
+    /// Channels are red, green, blue (default).
+    Rgb,
+    /// Channels are hue, saturation, brightness.
+    Hsb,
+}
+
+/// A resolved RGBA color (Processing's `color()` value).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Color {
+    pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b, a: 255 }
+    }
+
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    fn to_f32(self) -> [f32; 4] {
+        [
+            self.r as f32 / 255.0,
+            self.g as f32 / 255.0,
+            self.b as f32 / 255.0,
+            self.a as f32 / 255.0,
+        ]
+    }
+}
+
+/// Interpolate between two colors by `t` in [0, 1] (per RGBA channel).
+pub fn lerp_color(from: Color, to: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let l = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color {
+        r: l(from.r, to.r),
+        g: l(from.g, to.g),
+        b: l(from.b, to.b),
+        a: l(from.a, to.a),
+    }
+}
+
+/// HSB (0–255 per channel, Processing default ranges) → RGB.
+fn hsb_to_rgb(h: u8, s: u8, b: u8) -> (u8, u8, u8) {
+    let h = h as f32 / 255.0;
+    let s = s as f32 / 255.0;
+    let v = b as f32 / 255.0;
+    let i = (h * 6.0).floor();
+    let f = h * 6.0 - i;
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - f * s);
+    let t = v * (1.0 - (1.0 - f) * s);
+    let (r, g, b) = match (i as i32).rem_euclid(6) {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    (
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    )
+}
+
 // ── Draw State ──────────────────────────────────────────
 
+#[derive(Copy, Clone)]
 struct DrawState {
     stroke_color: [f32; 4],
     stroke_weight: f32,
@@ -244,6 +320,7 @@ struct DrawState {
     ellipse_mode: ShapeMode,
     cap: StrokeCap,
     join: StrokeJoin,
+    color_mode: ColorMode,
 }
 
 impl Default for DrawState {
@@ -259,6 +336,7 @@ impl Default for DrawState {
             ellipse_mode: ShapeMode::Center,
             cap: StrokeCap::Round,
             join: StrokeJoin::Miter,
+            color_mode: ColorMode::Rgb,
         }
     }
 }
@@ -405,6 +483,7 @@ pub(crate) struct Recorder {
     pub(crate) bg: wgpu::Color,
     matrix: [f32; 6],
     matrix_stack: Vec<[f32; 6]>,
+    style_stack: Vec<DrawState>,
     fill_tess: FillTessellator,
     stroke_tess: StrokeTessellator,
     shape: Option<ShapeRec>,
@@ -419,6 +498,7 @@ impl Recorder {
             bg: wgpu::Color::BLACK,
             matrix: IDENTITY,
             matrix_stack: Vec::new(),
+            style_stack: Vec::new(),
             fill_tess: FillTessellator::new(),
             stroke_tess: StrokeTessellator::new(),
             shape: None,
@@ -432,46 +512,67 @@ impl Recorder {
         self.runs.clear();
     }
 
-    /// Per-frame reset: clear geometry and the transform stack.
+    /// Per-frame reset: clear geometry and the transform/style stacks.
     pub(crate) fn reset(&mut self) {
         self.clear();
         self.matrix = IDENTITY;
         self.matrix_stack.clear();
+        self.style_stack.clear();
     }
 
     // ── state setters ──
 
-    pub(crate) fn set_background_a(&mut self, r: u8, g: u8, b: u8, a: u8) {
+    /// Resolve three channel arguments under the current color mode.
+    pub(crate) fn make_color(&self, c1: u8, c2: u8, c3: u8, a: u8) -> Color {
+        match self.state.color_mode {
+            ColorMode::Rgb => Color::rgba(c1, c2, c3, a),
+            ColorMode::Hsb => {
+                let (r, g, b) = hsb_to_rgb(c1, c2, c3);
+                Color::rgba(r, g, b, a)
+            }
+        }
+    }
+
+    pub(crate) fn set_color_mode(&mut self, mode: ColorMode) {
+        self.state.color_mode = mode;
+    }
+
+    pub(crate) fn set_background_color(&mut self, c: Color) {
         self.bg = wgpu::Color {
-            r: r as f64 / 255.0,
-            g: g as f64 / 255.0,
-            b: b as f64 / 255.0,
-            a: a as f64 / 255.0,
+            r: c.r as f64 / 255.0,
+            g: c.g as f64 / 255.0,
+            b: c.b as f64 / 255.0,
+            a: c.a as f64 / 255.0,
         };
     }
 
-    pub(crate) fn set_stroke_a(&mut self, r: u8, g: u8, b: u8, a: u8) {
-        self.state.stroke_color = [
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            a as f32 / 255.0,
-        ];
+    pub(crate) fn set_background_a(&mut self, c1: u8, c2: u8, c3: u8, a: u8) {
+        let c = self.make_color(c1, c2, c3, a);
+        self.set_background_color(c);
+    }
+
+    pub(crate) fn set_stroke_color(&mut self, c: Color) {
+        self.state.stroke_color = c.to_f32();
         self.state.has_stroke = true;
+    }
+
+    pub(crate) fn set_stroke_a(&mut self, c1: u8, c2: u8, c3: u8, a: u8) {
+        let c = self.make_color(c1, c2, c3, a);
+        self.set_stroke_color(c);
     }
 
     pub(crate) fn set_no_stroke(&mut self) {
         self.state.has_stroke = false;
     }
 
-    pub(crate) fn set_fill_a(&mut self, r: u8, g: u8, b: u8, a: u8) {
-        self.state.fill_color = [
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            a as f32 / 255.0,
-        ];
+    pub(crate) fn set_fill_color(&mut self, c: Color) {
+        self.state.fill_color = c.to_f32();
         self.state.has_fill = true;
+    }
+
+    pub(crate) fn set_fill_a(&mut self, c1: u8, c2: u8, c3: u8, a: u8) {
+        let c = self.make_color(c1, c2, c3, a);
+        self.set_fill_color(c);
     }
 
     pub(crate) fn set_no_fill(&mut self) {
@@ -525,6 +626,30 @@ impl Recorder {
     pub(crate) fn scale(&mut self, sx: f32, sy: f32) {
         let s = [sx, 0.0, 0.0, 0.0, sy, 0.0];
         self.matrix = mat_mult(&self.matrix, &s);
+    }
+
+    pub(crate) fn shear_x(&mut self, angle: f32) {
+        let m = [1.0, angle.tan(), 0.0, 0.0, 1.0, 0.0];
+        self.matrix = mat_mult(&self.matrix, &m);
+    }
+
+    pub(crate) fn shear_y(&mut self, angle: f32) {
+        let m = [1.0, 0.0, 0.0, angle.tan(), 1.0, 0.0];
+        self.matrix = mat_mult(&self.matrix, &m);
+    }
+
+    pub(crate) fn reset_matrix(&mut self) {
+        self.matrix = IDENTITY;
+    }
+
+    pub(crate) fn push_style(&mut self) {
+        self.style_stack.push(self.state);
+    }
+
+    pub(crate) fn pop_style(&mut self) {
+        if let Some(s) = self.style_stack.pop() {
+            self.state = s;
+        }
     }
 
     // ── geometry helpers ──
@@ -903,6 +1028,14 @@ impl Recorder {
 
 // ── Context ─────────────────────────────────────────────
 
+/// Which mouse button is currently held (Processing's `mouseButton`).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Center,
+}
+
 struct Context {
     width: u32,
     height: u32,
@@ -916,8 +1049,17 @@ struct Context {
     mouse_x: f32,
     mouse_y: f32,
     mouse_pressed: bool,
+    mouse_button: Option<MouseButton>,
+    /// Mouse position sampled at the start of this frame / previous frame.
+    frame_mouse: (f32, f32),
+    pmouse: (f32, f32),
+    /// Wheel movement: accumulating since last frame / readable this frame.
+    wheel_accum: f32,
+    wheel_frame: f32,
     key_pressed: bool,
     key_code: char,
+    start_time: std::time::Instant,
+    target_fps: Option<f32>,
 }
 
 impl Context {
@@ -934,8 +1076,15 @@ impl Context {
             mouse_x: 0.0,
             mouse_y: 0.0,
             mouse_pressed: false,
+            mouse_button: None,
+            frame_mouse: (0.0, 0.0),
+            pmouse: (0.0, 0.0),
+            wheel_accum: 0.0,
+            wheel_frame: 0.0,
             key_pressed: false,
             key_code: '\0',
+            start_time: std::time::Instant::now(),
+            target_fps: None,
         }
     }
 
@@ -943,6 +1092,10 @@ impl Context {
         self.rec.reset();
         self.graphics_frames.clear();
         self.frame_count += 1;
+        self.pmouse = self.frame_mouse;
+        self.frame_mouse = (self.mouse_x, self.mouse_y);
+        self.wheel_frame = self.wheel_accum;
+        self.wheel_accum = 0.0;
     }
 }
 
@@ -1047,6 +1200,53 @@ pub fn stroke_weight(w: f32) {
     with_ctx(|ctx| ctx.rec.set_stroke_weight(w));
 }
 
+/// Set how color channel arguments are interpreted: [`ColorMode::Rgb`]
+/// (default) or [`ColorMode::Hsb`]. All channels stay 0–255.
+pub fn color_mode(mode: ColorMode) {
+    with_ctx(|ctx| ctx.rec.set_color_mode(mode));
+}
+
+/// Build an opaque [`Color`] from three channels under the current
+/// [`color_mode`].
+pub fn color(c1: u8, c2: u8, c3: u8) -> Color {
+    with_ctx(|ctx| ctx.rec.make_color(c1, c2, c3, 255))
+}
+
+/// Build a [`Color`] with alpha under the current [`color_mode`].
+pub fn color_a(c1: u8, c2: u8, c3: u8, a: u8) -> Color {
+    with_ctx(|ctx| ctx.rec.make_color(c1, c2, c3, a))
+}
+
+/// Set the fill from a resolved [`Color`].
+pub fn fill_color(c: Color) {
+    with_ctx(|ctx| ctx.rec.set_fill_color(c));
+}
+
+/// Set the stroke from a resolved [`Color`].
+pub fn stroke_color(c: Color) {
+    with_ctx(|ctx| ctx.rec.set_stroke_color(c));
+}
+
+/// Clear the canvas to a resolved [`Color`].
+pub fn background_color(c: Color) {
+    with_ctx(|ctx| ctx.rec.set_background_color(c));
+}
+
+/// Set an opaque grayscale fill (`fill_gray(g)` = `fill(g, g, g)` in RGB).
+pub fn fill_gray(g: u8) {
+    with_ctx(|ctx| ctx.rec.set_fill_color(Color::rgb(g, g, g)));
+}
+
+/// Set an opaque grayscale stroke.
+pub fn stroke_gray(g: u8) {
+    with_ctx(|ctx| ctx.rec.set_stroke_color(Color::rgb(g, g, g)));
+}
+
+/// Clear the canvas to an opaque gray.
+pub fn background_gray(g: u8) {
+    with_ctx(|ctx| ctx.rec.set_background_color(Color::rgb(g, g, g)));
+}
+
 /// Return how many frames have been drawn since [`run`] started.
 ///
 /// Starts at 1 on the first call to `draw()`.
@@ -1079,6 +1279,38 @@ pub fn key() -> char {
     with_ctx(|ctx| ctx.key_code)
 }
 
+/// Horizontal mouse position at the previous frame.
+pub fn pmouse_x() -> f32 {
+    with_ctx(|ctx| ctx.pmouse.0)
+}
+
+/// Vertical mouse position at the previous frame.
+pub fn pmouse_y() -> f32 {
+    with_ctx(|ctx| ctx.pmouse.1)
+}
+
+/// The mouse button currently (or most recently) held, if any.
+pub fn mouse_button() -> Option<MouseButton> {
+    with_ctx(|ctx| ctx.mouse_button)
+}
+
+/// Scroll wheel movement during the previous frame (positive = up/away,
+/// in lines).
+pub fn mouse_wheel() -> f32 {
+    with_ctx(|ctx| ctx.wheel_frame)
+}
+
+/// Milliseconds elapsed since the sketch started.
+pub fn millis() -> u64 {
+    with_ctx(|ctx| ctx.start_time.elapsed().as_millis() as u64)
+}
+
+/// Cap the draw loop at `fps` frames per second. By default the loop runs
+/// at display rate (vsync).
+pub fn frame_rate(fps: f32) {
+    with_ctx(|ctx| ctx.target_fps = if fps > 0.0 { Some(fps) } else { None });
+}
+
 /// Push current transform onto the stack. Pair with pop().
 pub fn push() {
     with_ctx(|ctx| ctx.rec.push());
@@ -1102,6 +1334,32 @@ pub fn rotate(angle: f32) {
 /// Scale by (sx, sy). Use scale(s) for uniform scale.
 pub fn scale(sx: f32, sy: f32) {
     with_ctx(|ctx| ctx.rec.scale(sx, sy));
+}
+
+/// Shear along the x axis by `angle` radians.
+pub fn shear_x(angle: f32) {
+    with_ctx(|ctx| ctx.rec.shear_x(angle));
+}
+
+/// Shear along the y axis by `angle` radians.
+pub fn shear_y(angle: f32) {
+    with_ctx(|ctx| ctx.rec.shear_y(angle));
+}
+
+/// Replace the current transform with the identity.
+pub fn reset_matrix() {
+    with_ctx(|ctx| ctx.rec.reset_matrix());
+}
+
+/// Save the current drawing style (colors, weight, modes, caps). Pair with
+/// [`pop_style`]. Independent of the transform stack ([`push`]/[`pop`]).
+pub fn push_style() {
+    with_ctx(|ctx| ctx.rec.push_style());
+}
+
+/// Restore the most recently pushed drawing style.
+pub fn pop_style() {
+    with_ctx(|ctx| ctx.rec.pop_style());
 }
 
 /// Draw a line from (`x1`, `y1`) to (`x2`, `y2`) using the current stroke
@@ -1978,6 +2236,7 @@ struct Runner2D {
     msaa:         u32,
     window:       Option<Arc<Window>>,
     gpu:          Option<Gpu>,
+    last_frame:   Option<std::time::Instant>,
 }
 
 impl ApplicationHandler for Runner2D {
@@ -2015,6 +2274,18 @@ impl ApplicationHandler for Runner2D {
             }
 
             WindowEvent::RedrawRequested => {
+                // Optional frame limiter (frame_rate()). Default is vsync.
+                if let Some(fps) = with_ctx(|ctx| ctx.target_fps) {
+                    let target = std::time::Duration::from_secs_f32(1.0 / fps);
+                    if let Some(last) = self.last_frame {
+                        let elapsed = last.elapsed();
+                        if elapsed < target {
+                            std::thread::sleep(target - elapsed);
+                        }
+                    }
+                }
+                self.last_frame = Some(std::time::Instant::now());
+
                 with_ctx(|ctx| ctx.reset_frame());
                 (self.draw_fn)();
                 let frame = take_frame_2d();
@@ -2046,10 +2317,29 @@ impl ApplicationHandler for Runner2D {
                 }
             }
 
-            WindowEvent::MouseInput { state, .. } => {
+            WindowEvent::MouseInput { state, button, .. } => {
                 with_ctx(|ctx| {
                     ctx.mouse_pressed = state == ElementState::Pressed;
+                    if state == ElementState::Pressed {
+                        ctx.mouse_button = match button {
+                            winit::event::MouseButton::Left => Some(MouseButton::Left),
+                            winit::event::MouseButton::Right => Some(MouseButton::Right),
+                            winit::event::MouseButton::Middle => Some(MouseButton::Center),
+                            _ => None,
+                        };
+                    }
                 });
+                if !with_ctx(|ctx| ctx.continuous_redraw) {
+                    window.request_redraw();
+                }
+            }
+
+            WindowEvent::MouseWheel { delta, .. } => {
+                let lines = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => y,
+                    winit::event::MouseScrollDelta::PixelDelta(p) => p.y as f32 / 20.0,
+                };
+                with_ctx(|ctx| ctx.wheel_accum += lines);
                 if !with_ctx(|ctx| ctx.continuous_redraw) {
                     window.request_redraw();
                 }
@@ -2120,7 +2410,7 @@ pub fn run(draw_fn: fn()) {
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = Runner2D { draw_fn, window_attrs, msaa, window: None, gpu: None };
+    let mut app = Runner2D { draw_fn, window_attrs, msaa, window: None, gpu: None, last_frame: None };
     event_loop.run_app(&mut app).expect("event loop error");
 }
 
@@ -2246,6 +2536,38 @@ mod tests {
         assert_eq!(resolve_box(ShapeMode::Corners, 10.0, 20.0, 40.0, 60.0), (10.0, 20.0, 30.0, 40.0));
         assert_eq!(resolve_box(ShapeMode::Center, 25.0, 40.0, 30.0, 40.0), (10.0, 20.0, 30.0, 40.0));
         assert_eq!(resolve_box(ShapeMode::Radius, 25.0, 40.0, 15.0, 20.0), (10.0, 20.0, 30.0, 40.0));
+    }
+
+    #[test]
+    fn hsb_color_mode_resolves_known_hues() {
+        // Pure red: hue 0, full saturation/brightness.
+        assert_eq!(hsb_to_rgb(0, 255, 255), (255, 0, 0));
+        // Green is one third around the wheel.
+        assert_eq!(hsb_to_rgb(85, 255, 255), (0, 255, 0));
+        // Zero saturation is gray at the brightness level.
+        assert_eq!(hsb_to_rgb(123, 0, 128), (128, 128, 128));
+    }
+
+    #[test]
+    fn lerp_color_interpolates_channels() {
+        let a = Color::rgb(0, 0, 0);
+        let b = Color::rgba(255, 100, 0, 55);
+        let mid = lerp_color(a, b, 0.5);
+        assert_eq!((mid.r, mid.g, mid.b), (128, 50, 0));
+        assert_eq!(lerp_color(a, b, 0.0), Color::rgba(0, 0, 0, 255));
+        assert_eq!(lerp_color(a, b, 1.0), b);
+    }
+
+    #[test]
+    fn push_pop_style_round_trips() {
+        let mut rec = Recorder::new();
+        rec.set_fill_a(10, 20, 30, 255);
+        rec.push_style();
+        rec.set_fill_a(200, 200, 200, 255);
+        rec.set_stroke_weight(9.0);
+        rec.pop_style();
+        assert_eq!(rec.state.fill_color, Color::rgb(10, 20, 30).to_f32());
+        assert_eq!(rec.state.stroke_weight, 1.0);
     }
 
     #[test]
