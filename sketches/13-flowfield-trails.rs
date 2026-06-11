@@ -36,7 +36,7 @@ fn draw() {
     let t = frame_count() as f32 * 0.002;
 
     if frame_count() == 1 {
-        background(8, 8, 14);
+        background(8, 8, 1);
         random_seed(11);
         noise_seed(7);
         PARTICLES.with(|p| {
@@ -44,10 +44,9 @@ fn draw() {
         });
     }
 
-    // Translucent fade instead of a hard clear: old strokes sink away.
-    no_stroke();
-    fill_a(8, 8, 14, 10);
-    rect(0.0, 0.0, W, H);
+    // p5-style translucent background: blends a wash instead of clearing,
+    // so old strokes sink away gradually. Lower alpha = longer trails.
+    background_a(8, 8, 14, 10);
 
     color_mode(ColorMode::Hsb);
     PARTICLES.with(|p| {

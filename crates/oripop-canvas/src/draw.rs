@@ -483,9 +483,12 @@ pub(crate) struct Recorder {
     pub(crate) vertices: Vec<Vertex>,
     pub(crate) runs: Vec<DrawRun>,
     pub(crate) bg: wgpu::Color,
-    /// True when `background()` was called this frame: the canvas clears.
-    /// When false, previous frame content persists (Processing semantics).
+    /// True when an opaque `background()` was called this frame: the canvas
+    /// clears. When false, previous frame content persists (Processing
+    /// semantics). Translucent backgrounds blend a wash quad instead.
     pub(crate) bg_set: bool,
+    /// Canvas dimensions in logical pixels (for translucent washes).
+    pub(crate) surface_size: (f32, f32),
     matrix: [f32; 6],
     matrix_stack: Vec<[f32; 6]>,
     style_stack: Vec<DrawState>,
@@ -502,6 +505,7 @@ impl Recorder {
             runs: Vec::new(),
             bg: wgpu::Color::BLACK,
             bg_set: false,
+            surface_size: (400.0, 400.0),
             matrix: IDENTITY,
             matrix_stack: Vec::new(),
             style_stack: Vec::new(),
@@ -545,13 +549,37 @@ impl Recorder {
     }
 
     pub(crate) fn set_background_color(&mut self, c: Color) {
-        self.bg = wgpu::Color {
-            r: c.r as f64 / 255.0,
-            g: c.g as f64 / 255.0,
-            b: c.b as f64 / 255.0,
-            a: c.a as f64 / 255.0,
-        };
-        self.bg_set = true;
+        if c.a == 255 {
+            // Opaque: hard clear at the start of this frame's pass.
+            self.bg = wgpu::Color {
+                r: c.r as f64 / 255.0,
+                g: c.g as f64 / 255.0,
+                b: c.b as f64 / 255.0,
+                a: 1.0,
+            };
+            self.bg_set = true;
+        } else {
+            // Translucent (p5-style `background(c, alpha)`): blend a
+            // fullscreen wash over the persistent canvas — the idiomatic
+            // way to fade trails. Ignores the current transform.
+            let color = c.to_f32();
+            let (w, h) = self.surface_size;
+            let v = |x: f32, y: f32| Vertex {
+                position: [x, y],
+                color,
+                uv: [0.0, 0.0],
+                tex: 0.0,
+            };
+            self.vertices.extend_from_slice(&[
+                v(0.0, 0.0),
+                v(w, 0.0),
+                v(w, h),
+                v(0.0, 0.0),
+                v(w, h),
+                v(0.0, h),
+            ]);
+            self.note_run(0, 6);
+        }
     }
 
     pub(crate) fn set_background_a(&mut self, c1: u8, c2: u8, c3: u8, a: u8) {
@@ -1124,6 +1152,7 @@ pub fn size(width: u32, height: u32) {
     with_ctx(|ctx| {
         ctx.width = width;
         ctx.height = height;
+        ctx.rec.surface_size = (width as f32, height as f32);
     });
 }
 
@@ -1163,8 +1192,10 @@ pub fn background(r: u8, g: u8, b: u8) {
     background_a(r, g, b, 255);
 }
 
-/// Clear the canvas to an RGBA color. The alpha channel is 0 (transparent)
-/// to 255 (opaque).
+/// Background with alpha. With `a == 255` this is a hard clear, identical
+/// to [`background`]. With `a < 255` it blends a translucent fullscreen
+/// wash over the persistent canvas instead of clearing — the idiomatic
+/// trail-fade (`background_a(0, 0, 0, 10)`), as in p5.js.
 pub fn background_a(r: u8, g: u8, b: u8, a: u8) {
     with_ctx(|ctx| ctx.rec.set_background_a(r, g, b, a));
 }
@@ -1584,6 +1615,11 @@ const MIN_SURFACE_PIXELS: u32 = 2;
 const GFX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const GFX_MSAA: u32 = 4;
 
+/// The persistent canvas uses a float format so repeated low-alpha washes
+/// (`background_a(.., 10)` trail fades) decay smoothly instead of stalling
+/// on 8-bit quantization and leaving permanent ghosts.
+const CANVAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
 /// GPU resources for one offscreen `Graphics` canvas.
 struct GfxTarget {
     width: u32,
@@ -1618,6 +1654,8 @@ struct Gpu {
     vertex_buf_cap: u64,
     /// Pipeline targeting offscreen `Graphics` textures.
     gfx_pipeline: wgpu::RenderPipeline,
+    /// Pipeline targeting the persistent float canvas.
+    canvas_pipeline: wgpu::RenderPipeline,
     gfx_targets: std::collections::HashMap<u64, GfxTarget>,
     /// Persistent accumulation canvas: cleared only when `background()` is
     /// called, otherwise content carries across frames (Processing
@@ -1692,7 +1730,7 @@ impl Gpu {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: GFX_FORMAT,
+            format: CANVAS_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -1703,7 +1741,7 @@ impl Gpu {
             mip_level_count: 1,
             sample_count: GFX_MSAA,
             dimension: wgpu::TextureDimension::D2,
-            format: GFX_FORMAT,
+            format: CANVAS_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
@@ -1969,7 +2007,7 @@ impl Gpu {
             });
 
             if has_verts {
-                pass.set_pipeline(&self.gfx_pipeline);
+                pass.set_pipeline(&self.canvas_pipeline);
                 pass.set_vertex_buffer(0, self.vertex_buf.as_ref().unwrap().slice(..));
                 for run in &frame.runs {
                     let bind = if run.tex == 0 {
@@ -2116,7 +2154,10 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         push_constant_ranges: &[],
     });
 
-    let make_pipeline = |label: &str, target: wgpu::TextureFormat, samples: u32| {
+    let make_pipeline = |label: &str,
+                         target: wgpu::TextureFormat,
+                         samples: u32,
+                         blend: wgpu::BlendState| {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(label),
             layout: Some(&pipeline_layout),
@@ -2131,7 +2172,7 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(blend),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -2156,8 +2197,14 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         })
     };
 
-    let pipeline     = make_pipeline("oripop pipeline", format, msaa_samples);
-    let gfx_pipeline = make_pipeline("oripop graphics pipeline", GFX_FORMAT, GFX_MSAA);
+    // The surface pipeline only blits the opaque canvas: blending must be
+    // OFF so accumulated sub-1.0 canvas alpha can't bleed the clear color
+    // through (that reads as a dark halo around translucent content).
+    let pipeline = make_pipeline("oripop blit pipeline", format, msaa_samples, wgpu::BlendState::REPLACE);
+    let gfx_pipeline =
+        make_pipeline("oripop graphics pipeline", GFX_FORMAT, GFX_MSAA, wgpu::BlendState::ALPHA_BLENDING);
+    let canvas_pipeline =
+        make_pipeline("oripop canvas pipeline", CANVAS_FORMAT, GFX_MSAA, wgpu::BlendState::ALPHA_BLENDING);
 
     let msaa_view = create_msaa_texture(&device, format, phys_w, phys_h, msaa_samples);
 
@@ -2181,6 +2228,7 @@ async fn init_gpu(window: Arc<Window>, phys_w: u32, phys_h: u32, logical_w: u32,
         vertex_buf:     None,
         vertex_buf_cap: 0,
         gfx_pipeline,
+        canvas_pipeline,
         gfx_targets: std::collections::HashMap::new(),
         canvas_color_view: None,
         canvas_msaa_view: None,
@@ -2682,6 +2730,21 @@ mod tests {
         assert_eq!(resolve_box(ShapeMode::Corners, 10.0, 20.0, 40.0, 60.0), (10.0, 20.0, 30.0, 40.0));
         assert_eq!(resolve_box(ShapeMode::Center, 25.0, 40.0, 30.0, 40.0), (10.0, 20.0, 30.0, 40.0));
         assert_eq!(resolve_box(ShapeMode::Radius, 25.0, 40.0, 15.0, 20.0), (10.0, 20.0, 30.0, 40.0));
+    }
+
+    #[test]
+    fn translucent_background_is_a_wash_not_a_clear() {
+        begin_frame();
+        background_a(10, 10, 10, 24); // translucent: wash quad, no clear
+        let frame = take_frame_2d();
+        assert!(!frame.clear, "translucent background must not hard-clear");
+        assert_eq!(frame.vertices.len(), 6, "wash is a fullscreen quad");
+
+        begin_frame();
+        background(10, 10, 10); // opaque: clear, no geometry
+        let frame = take_frame_2d();
+        assert!(frame.clear);
+        assert!(frame.vertices.is_empty());
     }
 
     #[test]

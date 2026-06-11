@@ -39,12 +39,11 @@ pub struct Graphics {
 
 /// Create an offscreen canvas of the given size in logical pixels.
 pub fn create_graphics(width: u32, height: u32) -> Graphics {
-    Graphics {
-        id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-        width: width.max(1),
-        height: height.max(1),
-        rec: Recorder::new(),
-    }
+    let width = width.max(1);
+    let height = height.max(1);
+    let mut rec = Recorder::new();
+    rec.surface_size = (width as f32, height as f32);
+    Graphics { id: NEXT_ID.fetch_add(1, Ordering::Relaxed), width, height, rec }
 }
 
 impl Graphics {
@@ -77,10 +76,13 @@ impl Graphics {
         self.background_a(r, g, b, 255);
     }
 
-    /// Clear the canvas to an RGBA color, discarding previously recorded
-    /// geometry.
+    /// Background with alpha. Opaque (`a == 255`) clears recorded geometry;
+    /// translucent blends a wash over the existing content (trail fading),
+    /// as in p5.js.
     pub fn background_a(&mut self, r: u8, g: u8, b: u8, a: u8) {
-        self.rec.clear();
+        if a == 255 {
+            self.rec.clear();
+        }
         self.rec.set_background_a(r, g, b, a);
     }
 
@@ -254,7 +256,9 @@ impl Graphics {
     }
 
     pub fn background_color(&mut self, c: Color) {
-        self.rec.clear();
+        if c.a == 255 {
+            self.rec.clear();
+        }
         self.rec.set_background_color(c);
     }
 

@@ -33,10 +33,9 @@ fn draw() {
         background(14, 12, 20);
         noise_seed(21);
     }
-    // Gentle fade so the blobs leave breathing ghosts.
-    no_stroke();
-    fill_a(14, 12, 20, 24);
-    rect(0.0, 0.0, W, H);
+    // p5-style translucent background: gentle fade so the blobs leave
+    // breathing ghosts. Lower alpha = longer ghosts.
+    background_a(14, 12, 20, 24);
 
     let t = millis() as f32 * 0.00025;
     color_mode(ColorMode::Hsb);
