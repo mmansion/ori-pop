@@ -3,7 +3,7 @@
 //! Proves: begin_shape / curve_vertex / contours, noise-driven organic form,
 //! HSB color sweeps, layered alpha over a soft fade.
 
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 const W: f32 = 1000.0;
 const H: f32 = 750.0;

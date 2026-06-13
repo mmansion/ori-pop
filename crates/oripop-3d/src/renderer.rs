@@ -16,6 +16,8 @@ use crate::{
     scene::{ObjectTexture, Scene3D, STIPPLE_CANVAS_SIZE},
 };
 
+use oripop_canvas::draw::{DrawFrame, ResolvedCanvasFormat, VERTEX_2D_STRIDE};
+
 // ── GPU-side uniform structs ─────────────────────────────────────────────────
 //
 // Layout is verified to match the WGSL structs in shader3d.wgsl and
@@ -110,27 +112,34 @@ pub(crate) struct Renderer {
     uniform_3d_bg_layout: wgpu::BindGroupLayout,
     uniform_3d_bg:        wgpu::BindGroup,
     texture_bg:           wgpu::BindGroup,
-    /// CPU-uploaded stipple / flat art for [`ObjectTexture::StippleCanvas`].
-    stipple_texture:      wgpu::Texture,
-    texture_bg_stipple:   wgpu::BindGroup,
+    texture_bg_layout:    wgpu::BindGroupLayout,
+    sampler:              wgpu::Sampler,
+    /// GPU canvas plane texture sampled by [`ObjectTexture::Canvas`].
+    canvas_texture:       wgpu::Texture,
+    canvas_texture_view:  wgpu::TextureView,
+    texture_bg_canvas:    wgpu::BindGroup,
+    canvas_tex_w:         u32,
+    canvas_tex_h:         u32,
+    canvas_gpu_format:    wgpu::TextureFormat,
     uniform_slot_size:    u64,
 
     // Pre-built mesh primitives
     meshes: [GpuMesh; 3], // indexed by MeshKind
 
-    // 2D overlay pipeline (reuses oripop-canvas's WGSL shader)
-    pipeline_2d:    wgpu::RenderPipeline,
-    uniform_2d_buf: wgpu::Buffer,
-    uniform_2d_bg:  wgpu::BindGroup,
+    // Canvas raster pipeline (2D verts → plane texture; reuses oripop-canvas WGSL)
+    canvas_pipeline:    wgpu::RenderPipeline,
+    canvas_uniform_buf: wgpu::Buffer,
+    canvas_uniform_bg:  wgpu::BindGroup,
+    canvas_msaa_view:   Option<wgpu::TextureView>,
 
-    /// Persistent 2D vertex buffer — grown on demand, never shrunk.
-    vb_2d:     Option<wgpu::Buffer>,
-    vb_2d_cap: u64,
+    /// Persistent 2D vertex buffer for canvas raster — grown on demand.
+    vb_canvas:     Option<wgpu::Buffer>,
+    vb_canvas_cap: u64,
 }
 
 const MAX_OBJECTS:    u64 = 256;
 const GEN_TEX_SIZE:   u32 = 512;
-const VERTEX_2D_STRIDE: u32 = oripop_canvas::draw::VERTEX_2D_STRIDE as u32;
+const CANVAS_MSAA:    u32 = 4;
 
 fn depth_format() -> wgpu::TextureFormat { wgpu::TextureFormat::Depth32Float }
 
@@ -170,6 +179,55 @@ fn create_msaa_view(
             })
             .create_view(&wgpu::TextureViewDescriptor::default()),
     )
+}
+
+fn resolved_to_gpu_format(resolved: ResolvedCanvasFormat) -> wgpu::TextureFormat {
+    match resolved {
+        ResolvedCanvasFormat::Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        ResolvedCanvasFormat::Float => wgpu::TextureFormat::Rgba16Float,
+    }
+}
+
+fn create_canvas_texture_binding(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label:           Some("canvas plane texture"),
+        size:            wgpu::Extent3d {
+            width:                 width.max(1),
+            height:                height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count:    1,
+        dimension:       wgpu::TextureDimension::D2,
+        format,
+        usage:           wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats:    &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label:   Some("texture bg canvas"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding:  0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding:  1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    });
+    (texture, view, bind_group)
 }
 
 impl Renderer {
@@ -363,35 +421,8 @@ impl Renderer {
             ],
         });
 
-        let stipple_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label:           Some("stipple canvas texture"),
-            size:            wgpu::Extent3d {
-                width:                 STIPPLE_CANVAS_SIZE,
-                height:                STIPPLE_CANVAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count:    1,
-            dimension:       wgpu::TextureDimension::D2,
-            format:          wgpu::TextureFormat::Rgba8Unorm,
-            usage:           wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats:    &[],
-        });
-        let stipple_texture_view = stipple_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let texture_bg_stipple = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("texture bg stipple"),
-            layout:  &texture_bg_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding:  0,
-                    resource: wgpu::BindingResource::TextureView(&stipple_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding:  1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-        });
+        let (canvas_texture, canvas_texture_view, texture_bg_canvas) =
+            create_canvas_texture_binding(&device, &texture_bg_layout, &sampler, 1, 1, wgpu::TextureFormat::Rgba8UnormSrgb);
 
         // ── 3D uniform buffer (dynamic, one slot per object) ───────────────
 
@@ -494,15 +525,16 @@ impl Renderer {
             GpuMesh::upload(&device, &MeshKind::Plane.build()),
         ];
 
-        // ── 2D overlay pipeline ────────────────────────────────────────────
+        // ── Canvas raster pipeline (2D → plane texture) ───────────────────
 
-        let shader_2d = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("2d overlay shader"),
+        let canvas_gpu_format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let shader_canvas = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("canvas raster shader"),
             source: wgpu::ShaderSource::Wgsl(oripop_canvas::draw::SHADER_2D_WGSL.into()),
         });
 
-        let uniform_2d_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("2d uniforms"),
+        let canvas_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label:    Some("canvas uniforms"),
             contents: bytemuck::bytes_of(&Uniforms2D {
                 resolution: [logical_w as f32, logical_h as f32],
                 _pad:       [0.0; 2],
@@ -510,52 +542,52 @@ impl Renderer {
             usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let uniform_2d_bg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("2d bg layout"),
+        let canvas_uniform_bg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label:   Some("canvas bg layout"),
             entries: &oripop_canvas::draw::bind_group_layout_entries_2d(),
         });
 
-        let (white_2d_view, sampler_2d) =
+        let (canvas_white_view, canvas_sampler) =
             oripop_canvas::draw::create_white_texture_2d(&device, &queue);
-        let uniform_2d_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("2d bg"),
-            layout:  &uniform_2d_bg_layout,
+        let canvas_uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("canvas bg"),
+            layout:  &canvas_uniform_bg_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding:  0,
-                    resource: uniform_2d_buf.as_entire_binding(),
+                    resource: canvas_uniform_buf.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding:  1,
-                    resource: wgpu::BindingResource::TextureView(&white_2d_view),
+                    resource: wgpu::BindingResource::TextureView(&canvas_white_view),
                 },
                 wgpu::BindGroupEntry {
                     binding:  2,
-                    resource: wgpu::BindingResource::Sampler(&sampler_2d),
+                    resource: wgpu::BindingResource::Sampler(&canvas_sampler),
                 },
             ],
         });
 
-        let pipeline_2d_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("2d pipeline layout"),
-            bind_group_layouts:   &[&uniform_2d_bg_layout],
+        let canvas_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("canvas pipeline layout"),
+            bind_group_layouts:   &[&canvas_uniform_bg_layout],
             push_constant_ranges: &[],
         });
 
-        let pipeline_2d = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:  Some("2d overlay pipeline"),
-            layout: Some(&pipeline_2d_layout),
+        let canvas_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("canvas raster pipeline"),
+            layout: Some(&canvas_pipeline_layout),
             vertex: wgpu::VertexState {
-                module:              &shader_2d,
+                module:              &shader_canvas,
                 entry_point:         Some("vs_main"),
                 buffers:             &[oripop_canvas::draw::vertex_2d_buffer_layout()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module:              &shader_2d,
+                module:              &shader_canvas,
                 entry_point:         Some("fs_main"),
                 targets:             &[Some(wgpu::ColorTargetState {
-                    format,
+                    format:     canvas_gpu_format,
                     blend:      Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -571,10 +603,16 @@ impl Renderer {
                 conservative:       false,
             },
             depth_stencil: None,
-            multisample:   wgpu::MultisampleState { count: msaa, mask: !0, alpha_to_coverage_enabled: false },
+            multisample:   wgpu::MultisampleState {
+                count:                     CANVAS_MSAA,
+                mask:                      !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview:     None,
             cache:         None,
         });
+
+        let canvas_msaa_view = create_msaa_view(&device, canvas_gpu_format, 1, 1, CANVAS_MSAA);
 
         // ── MSAA + depth ───────────────────────────────────────────────────
 
@@ -601,15 +639,22 @@ impl Renderer {
             uniform_3d_bg_layout,
             uniform_3d_bg,
             texture_bg,
-            stipple_texture,
-            texture_bg_stipple,
+            texture_bg_layout,
+            sampler,
+            canvas_texture,
+            canvas_texture_view,
+            texture_bg_canvas,
+            canvas_tex_w: 1,
+            canvas_tex_h: 1,
+            canvas_gpu_format,
             uniform_slot_size: slot_size,
             meshes,
-            pipeline_2d,
-            uniform_2d_buf,
-            uniform_2d_bg,
-            vb_2d:     None,
-            vb_2d_cap: 0,
+            canvas_pipeline,
+            canvas_uniform_buf,
+            canvas_uniform_bg,
+            canvas_msaa_view,
+            vb_canvas:     None,
+            vb_canvas_cap: 0,
         }
     }
 
@@ -632,12 +677,169 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, w, h, self.msaa_samples);
     }
 
-    pub fn update_2d_resolution(&self, logical_w: f32, logical_h: f32) {
+    pub fn update_canvas_resolution(&self, canvas_w: f32, canvas_h: f32) {
         self.queue.write_buffer(
-            &self.uniform_2d_buf,
+            &self.canvas_uniform_buf,
             0,
-            bytemuck::bytes_of(&Uniforms2D { resolution: [logical_w, logical_h], _pad: [0.0; 2] }),
+            bytemuck::bytes_of(&Uniforms2D {
+                resolution: [canvas_w, canvas_h],
+                _pad:       [0.0; 2],
+            }),
         );
+    }
+
+    fn ensure_canvas_target(&mut self, width: u32, height: u32, resolved: ResolvedCanvasFormat) {
+        let format = resolved_to_gpu_format(resolved);
+        let w = width.max(1);
+        let h = height.max(1);
+        if self.canvas_tex_w == w && self.canvas_tex_h == h && self.canvas_gpu_format == format {
+            return;
+        }
+        self.canvas_tex_w = w;
+        self.canvas_tex_h = h;
+        self.canvas_gpu_format = format;
+        let (tex, view, bg) = create_canvas_texture_binding(
+            &self.device,
+            &self.texture_bg_layout,
+            &self.sampler,
+            w,
+            h,
+            format,
+        );
+        self.canvas_texture = tex;
+        self.canvas_texture_view = view;
+        self.texture_bg_canvas = bg;
+        self.canvas_msaa_view = create_msaa_view(&self.device, format, w, h, CANVAS_MSAA);
+
+        if format != wgpu::TextureFormat::Rgba8UnormSrgb {
+            // Rebuild raster pipeline when the canvas format changes.
+            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label:  Some("canvas raster shader"),
+                source: wgpu::ShaderSource::Wgsl(oripop_canvas::draw::SHADER_2D_WGSL.into()),
+            });
+            let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label:   Some("canvas bg layout"),
+                entries: &oripop_canvas::draw::bind_group_layout_entries_2d(),
+            });
+            let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label:                Some("canvas pipeline layout"),
+                bind_group_layouts:   &[&layout],
+                push_constant_ranges: &[],
+            });
+            self.canvas_pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label:  Some("canvas raster pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module:              &shader,
+                    entry_point:         Some("vs_main"),
+                    buffers:             &[oripop_canvas::draw::vertex_2d_buffer_layout()],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module:              &shader,
+                    entry_point:         Some("fs_main"),
+                    targets:             &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend:      Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology:           wgpu::PrimitiveTopology::TriangleList,
+                    front_face:         wgpu::FrontFace::Ccw,
+                    cull_mode:          None,
+                    strip_index_format: None,
+                    polygon_mode:       wgpu::PolygonMode::Fill,
+                    unclipped_depth:    false,
+                    conservative:       false,
+                },
+                depth_stencil: None,
+                multisample:   wgpu::MultisampleState {
+                    count:                     CANVAS_MSAA,
+                    mask:                      !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview:     None,
+                cache:         None,
+            });
+        }
+    }
+
+    fn raster_canvas(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &DrawFrame,
+        canvas_w: f32,
+        canvas_h: f32,
+        accumulate: bool,
+    ) {
+        let bytes = bytemuck::cast_slice(&frame.vertices);
+        if bytes.is_empty() && !frame.clear {
+            return;
+        }
+
+        if !bytes.is_empty() {
+            let needed = bytes.len() as u64;
+            if self.vb_canvas_cap < needed {
+                let cap = needed.next_power_of_two().max(4096);
+                self.vb_canvas = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label:              Some("canvas vb"),
+                    size:               cap,
+                    usage:              wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }));
+                self.vb_canvas_cap = cap;
+            }
+            self.queue
+                .write_buffer(self.vb_canvas.as_ref().unwrap(), 0, bytes);
+        }
+
+        self.update_canvas_resolution(canvas_w, canvas_h);
+
+        let load = if accumulate {
+            wgpu::LoadOp::Load
+        } else if frame.clear {
+            wgpu::LoadOp::Clear(frame.bg)
+        } else {
+            wgpu::LoadOp::Load
+        };
+
+        let color_view = &self.canvas_texture_view;
+        let msaa_view = self.canvas_msaa_view.as_ref().unwrap();
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label:                    Some("canvas raster"),
+            color_attachments:        &[Some(wgpu::RenderPassColorAttachment {
+                view:           msaa_view,
+                resolve_target: Some(color_view),
+                ops:            wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes:         None,
+            occlusion_query_set:      None,
+        });
+
+        if !bytes.is_empty() {
+            pass.set_pipeline(&self.canvas_pipeline);
+            pass.set_bind_group(0, &self.canvas_uniform_bg, &[]);
+            pass.set_vertex_buffer(0, self.vb_canvas.as_ref().unwrap().slice(..));
+            if frame.runs.is_empty() {
+                let count = bytes.len() as u32 / VERTEX_2D_STRIDE as u32;
+                pass.draw(0..count, 0..1);
+            } else {
+                for run in &frame.runs {
+                    if run.tex != 0 {
+                        continue;
+                    }
+                    pass.draw(run.start..run.start + run.count, 0..1);
+                }
+            }
+        }
     }
 
     pub fn reconfigure(&mut self) {
@@ -646,19 +848,37 @@ impl Renderer {
 
     // ── Render ────────────────────────────────────────────────────────────────
 
-    /// Render one frame: compute → 3D → 2D overlay → MSAA resolve.
+    /// Render one frame: canvas raster → compute → 3D (with MSAA resolve).
     ///
     /// Returns the acquired [`wgpu::SurfaceTexture`] **without presenting** it,
     /// so the caller can composite additional passes (e.g. egui) before calling
     /// `output.present()` exactly once per frame.
     pub fn render(
         &mut self,
-        scene:       &Scene3D,
-        bg:          wgpu::Color,
-        vertices_2d: &[u8],
+        scene: &Scene3D,
+        frame: &DrawFrame,
     ) -> Result<wgpu::SurfaceTexture, wgpu::SurfaceError> {
         let output       = self.surface.get_current_texture()?;
         let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let resolved = oripop_canvas::draw::resolved_canvas_format();
+        let (lw, lh, _, _, density) = oripop_canvas::draw::settings();
+        let canvas_w = (lw as f32 * density as f32).max(1.0);
+        let canvas_h = (lh as f32 * density as f32).max(1.0);
+        let tex_w = canvas_w as u32;
+        let tex_h = canvas_h as u32;
+
+        let need_canvas = scene.canvas_plane
+            || scene
+                .objects
+                .iter()
+                .any(|o| o.visible && o.texture == ObjectTexture::Canvas)
+            || !frame.vertices.is_empty()
+            || frame.clear;
+
+        if need_canvas {
+            self.ensure_canvas_target(tex_w, tex_h, resolved);
+        }
 
         // ── Write gen-params uniform ───────────────────────────────────────
 
@@ -672,15 +892,28 @@ impl Renderer {
         };
         self.queue.write_buffer(&self.gen_params_buf, 0, bytemuck::bytes_of(&gp));
 
-        let stipple_bytes = (STIPPLE_CANVAS_SIZE * STIPPLE_CANVAS_SIZE * 4) as usize;
-        let need_stipple = scene
-            .objects
-            .iter()
-            .any(|o| o.texture == ObjectTexture::StippleCanvas);
-        if need_stipple && scene.stipple_canvas.len() == stipple_bytes {
+        // Legacy manual CPU stipple upload (migration path for sketch 10).
+        let legacy_bytes = (STIPPLE_CANVAS_SIZE * STIPPLE_CANVAS_SIZE * 4) as usize;
+        let stipple_modified = scene.stipple_canvas.len() == legacy_bytes
+            && scene
+                .stipple_canvas
+                .chunks_exact(4)
+                .any(|px| px != [10, 10, 14, 255]);
+        let need_legacy = stipple_modified
+            && scene
+                .objects
+                .iter()
+                .any(|o| o.visible && o.texture == ObjectTexture::Canvas);
+
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("oripop-3d frame"),
+        });
+
+        if need_legacy {
+            self.ensure_canvas_target(STIPPLE_CANVAS_SIZE, STIPPLE_CANVAS_SIZE, ResolvedCanvasFormat::Srgb);
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture:   &self.stipple_texture,
+                    texture:   &self.canvas_texture,
                     mip_level: 0,
                     origin:    wgpu::Origin3d::ZERO,
                     aspect:    wgpu::TextureAspect::All,
@@ -699,7 +932,17 @@ impl Renderer {
             );
         }
 
-        // ── Write per-object 3D uniforms ───────────────────────────────────
+        if need_canvas {
+            self.raster_canvas(
+                &mut encoder,
+                frame,
+                canvas_w,
+                canvas_h,
+                need_legacy,
+            );
+        }
+
+        // ── Write gen-params uniform ───────────────────────────────────────
 
         let aspect    = scene.aspect();
         let view_proj = scene.camera.view_proj(aspect);
@@ -728,13 +971,13 @@ impl Renderer {
             self.queue.write_buffer(&self.uniform_3d_buf, 0, &data);
         }
 
-        // ── Command encoder ────────────────────────────────────────────────
+        let clear_bg = if frame.clear {
+            frame.bg
+        } else {
+            wgpu::Color { r: 0.04, g: 0.04, b: 0.055, a: 1.0 }
+        };
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("oripop-3d frame"),
-        });
-
-        // ── Pass 1: compute — generate texture ─────────────────────────────
+        // ── Write per-object 3D uniforms ───────────────────────────────────
 
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -747,10 +990,10 @@ impl Renderer {
             cpass.dispatch_workgroups(tiles, tiles, 1);
         }
 
-        // ── Pass 2: 3D render ──────────────────────────────────────────────
+        // ── Pass 2: 3D render + MSAA resolve ───────────────────────────────
 
         let (color_target_3d, resolve_3d) = match &self.msaa_view {
-            Some(msaa) => (msaa as &wgpu::TextureView, None),
+            Some(msaa) => (msaa as &wgpu::TextureView, Some(&surface_view)),
             None       => (&surface_view,              None),
         };
 
@@ -761,7 +1004,7 @@ impl Renderer {
                     view:           color_target_3d,
                     resolve_target: resolve_3d,
                     ops:            wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(bg),
+                        load:  wgpu::LoadOp::Clear(clear_bg),
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
@@ -781,9 +1024,12 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline_3d);
 
             for (i, obj) in scene.objects.iter().enumerate() {
+                if !obj.visible {
+                    continue;
+                }
                 let tex_bg = match obj.texture {
                     ObjectTexture::Gen => &self.texture_bg,
-                    ObjectTexture::StippleCanvas => &self.texture_bg_stipple,
+                    ObjectTexture::Canvas => &self.texture_bg_canvas,
                 };
                 pass.set_bind_group(1, tex_bg, &[]);
 
@@ -797,61 +1043,8 @@ impl Renderer {
             }
         }
 
-        // ── Pass 3: 2D overlay + MSAA resolve ─────────────────────────────
-        //
-        // This pass always runs so that the MSAA content is resolved to the
-        // surface even when there are no 2D draw calls.
-
-        // Upload 2D vertices into the persistent buffer, growing only when needed.
-        let has_verts_2d = !vertices_2d.is_empty();
-        if has_verts_2d {
-            let needed = vertices_2d.len() as u64;
-            if self.vb_2d_cap < needed {
-                let cap = needed.next_power_of_two().max(4096);
-                self.vb_2d = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label:              Some("2d vb"),
-                    size:               cap,
-                    usage:              wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
-                self.vb_2d_cap = cap;
-            }
-            self.queue.write_buffer(self.vb_2d.as_ref().unwrap(), 0, vertices_2d);
-        }
-
-        let (color_target_2d, resolve_2d) = match &self.msaa_view {
-            Some(msaa) => (msaa as &wgpu::TextureView, Some(&surface_view)),
-            None       => (&surface_view,              None),
-        };
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label:                    Some("2d overlay + resolve"),
-                color_attachments:        &[Some(wgpu::RenderPassColorAttachment {
-                    view:           color_target_2d,
-                    resolve_target: resolve_2d,
-                    ops:            wgpu::Operations {
-                        load:  wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes:         None,
-                occlusion_query_set:      None,
-            });
-
-            if has_verts_2d {
-                let count = vertices_2d.len() as u32 / VERTEX_2D_STRIDE;
-                pass.set_pipeline(&self.pipeline_2d);
-                pass.set_bind_group(0, &self.uniform_2d_bg, &[]);
-                pass.set_vertex_buffer(0, self.vb_2d.as_ref().unwrap().slice(..));
-                pass.draw(0..count, 0..1);
-            }
-        }
-
         self.queue.submit(std::iter::once(encoder.finish()));
-        Ok(output) // caller presents after any additional passes
+        Ok(output)
     }
 
     /// Composite an egui frame onto `output` acquired by a preceding [`render`] call.

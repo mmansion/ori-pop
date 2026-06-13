@@ -40,5 +40,6 @@ pub use field::{
     density_at, eval_force, field_at, generate_dots,
     Canvas, Distribution, Dot, Field, Force, Params, Render, Singularity,
 };
+pub use draw::{CanvasFormat, DrawFrame, ResolvedCanvasFormat};
 pub use line::Line;
 pub use point::Point;

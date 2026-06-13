@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 thread_local! {
     static OFFSCREEN: RefCell<Option<Graphics>> = const { RefCell::new(None) };

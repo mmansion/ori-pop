@@ -1,4 +1,4 @@
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 const W: u32 = 800;
 const H: u32 = 600;

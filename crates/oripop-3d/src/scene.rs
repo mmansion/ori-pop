@@ -49,9 +49,12 @@ pub enum ObjectTexture {
     /// Procedural texture from the GPU compute pass (FBM).
     #[default]
     Gen,
-    /// RGBA8 image in [`Scene3D::stipple_canvas`], uploaded before the 3D pass each frame.
-    StippleCanvas,
+    /// GPU-rasterized canvas plane texture (see [`Scene3D::canvas_plane`]).
+    Canvas,
 }
+
+/// Back-compat alias — prefer [`ObjectTexture::Canvas`].
+pub const STIPPLE_CANVAS: ObjectTexture = ObjectTexture::Canvas;
 
 // ── Scene object ──────────────────────────────────────────────────────────────
 
@@ -131,7 +134,14 @@ pub struct Scene3D {
     /// Speed of the auto-spin in radians per second. Default: `0.25`.
     pub spin_speed: f32,
 
-    /// RGBA8 pixels for [`ObjectTexture::StippleCanvas`], size `STIPPLE_CANVAS_SIZE² × 4`.
+    /// Host framing mode — sketch ortho plane vs free scene.
+    pub player_mode: crate::player::PlayerMode,
+
+    /// When `true`, canvas draws raster to the plane each frame (always on in sketch mode).
+    pub canvas_plane: bool,
+
+    /// Legacy CPU RGBA8 buffer for manual uploads (e.g. migration sketches).
+    /// Prefer letting the player raster canvas draws instead.
     pub stipple_canvas: Vec<u8>,
 
     pub(crate) objects: Vec<Object3D>,
@@ -160,6 +170,8 @@ impl Scene3D {
             orbit_enabled:  true,
             auto_spin:      false,
             spin_speed:     0.25,
+            player_mode:    crate::player::PlayerMode::Scene,
+            canvas_plane:   true,
             stipple_canvas: stipple_canvas_initial(),
             objects:        Vec::new(),
             next_id:        0,

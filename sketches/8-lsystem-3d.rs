@@ -16,7 +16,7 @@
 //! Run with:
 //!   cargo run --bin 8-lsystem-3d
 
-use oripop_3d::prelude::*;
+use oripop_runtime::prelude::*;
 use rand::{SeedableRng, Rng};
 use rand::rngs::SmallRng;
 use std::collections::VecDeque;

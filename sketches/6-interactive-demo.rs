@@ -1,4 +1,4 @@
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 use oripop_canvas::{generate_dots, Force, Line, Params, Point};
 
 fn main() {

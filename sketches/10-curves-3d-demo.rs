@@ -9,7 +9,7 @@
 
 use std::cell::RefCell;
 
-use oripop_3d::prelude::*;
+use oripop_runtime::prelude::*;
 use oripop_canvas::{generate_dots, Bezier, DensityProfile, Dot, Force, Params, Point};
 
 /// Bézier `(x,y)` in \([0,1]^2\) (top-left origin) ↔ unit plane local \([-0.5,0.5]^2\) at \(Z=0\),
@@ -508,6 +508,6 @@ fn draw(scene: &mut Scene3D) {
         "Stipple plane",
         MeshKind::Plane,
         plane_model,
-        ObjectTexture::StippleCanvas,
+        ObjectTexture::Canvas,
     );
 }

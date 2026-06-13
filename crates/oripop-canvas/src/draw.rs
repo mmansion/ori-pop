@@ -2,7 +2,7 @@
 //!
 //! Import everything via [`crate::prelude`] and write sketches that look like
 //! Processing: call [`size`], [`title`], optionally [`smooth`] in `main()`,
-//! then [`run`] with a `draw` function that is called every frame.
+//! then `oripop_runtime::run` (or `run_sketch`) with a `draw` function called every frame.
 //!
 //! # Coordinate system
 //!
@@ -11,8 +11,8 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! use oripop_canvas::prelude::*;
+//! ```ignore
+//! use oripop_runtime::prelude::*;
 //!
 //! fn main() {
 //!     size(800, 600);
@@ -55,7 +55,7 @@ use winit::{
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct Vertex {
+pub struct Vertex {
     position: [f32; 2],
     color: [f32; 4],
     uv: [f32; 2],
@@ -139,7 +139,7 @@ fn append_indexed(out: &mut Vec<Vertex>, buf: &VertexBuffers<Vertex, u32>) {
 
 /// A contiguous range of vertices drawn with a single texture binding.
 #[derive(Copy, Clone, Debug)]
-pub(crate) struct DrawRun {
+pub struct DrawRun {
     /// 0 = solid color; otherwise a `Graphics` id.
     pub tex: u64,
     pub start: u32,
@@ -155,8 +155,8 @@ pub(crate) struct GraphicsFrame {
     pub vertices: Vec<Vertex>,
 }
 
-/// Everything the windowed host needs to render one frame.
-pub(crate) struct Frame2D {
+/// Everything the 3D player needs to raster one frame onto the canvas plane.
+pub struct DrawFrame {
     pub bg: wgpu::Color,
     /// Whether `background()` was called: clear the persistent canvas.
     pub clear: bool,
@@ -1087,11 +1087,33 @@ struct Handlers {
     key_released: Option<fn()>,
 }
 
+/// Storage precision for the canvas plane texture.
+///
+/// [`CanvasFormat::Auto`] picks [`ResolvedCanvasFormat::Float`] when the sketch
+/// uses translucent [`background_a`] washes (trail fades); otherwise sRGB.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CanvasFormat {
+    #[default]
+    Auto,
+    Srgb,
+    Float,
+}
+
+/// Resolved GPU format after [`CanvasFormat::Auto`] inference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResolvedCanvasFormat {
+    Srgb,
+    Float,
+}
+
 struct Context {
     width: u32,
     height: u32,
     title: String,
     msaa_samples: u32,
+    canvas_format: CanvasFormat,
+    /// Set when [`background_a`] is called with `a < 255` (trail-fade semantics).
+    translucent_bg_used: bool,
     /// When false, the event loop does not spin at max FPS; redraws are requested from input and resize only.
     continuous_redraw: bool,
     rec: Recorder,
@@ -1125,6 +1147,8 @@ impl Context {
             height: 400,
             title: String::from("ori-pop"),
             msaa_samples: 4,
+            canvas_format: CanvasFormat::Auto,
+            translucent_bg_used: false,
             continuous_redraw: true,
             rec: Recorder::new(),
             graphics_frames: Vec::new(),
@@ -1196,6 +1220,30 @@ pub fn continuous_redraw_enabled() -> bool {
     with_ctx(|ctx| ctx.continuous_redraw)
 }
 
+/// Choose the canvas plane texture format. Call before [`run`](crate::draw::run)
+/// / `run_sketch` / `run3d`, like [`smooth`] and [`pixel_density`].
+///
+/// Default is [`CanvasFormat::Auto`]: sRGB for opaque sketches, float when
+/// translucent [`background_a`] washes are used (trail fades).
+pub fn canvas_format(format: CanvasFormat) {
+    with_ctx(|ctx| ctx.canvas_format = format);
+}
+
+/// Resolve the effective canvas texture format for this sketch.
+pub fn resolved_canvas_format() -> ResolvedCanvasFormat {
+    with_ctx(|ctx| match ctx.canvas_format {
+        CanvasFormat::Auto => {
+            if ctx.translucent_bg_used {
+                ResolvedCanvasFormat::Float
+            } else {
+                ResolvedCanvasFormat::Srgb
+            }
+        }
+        CanvasFormat::Srgb => ResolvedCanvasFormat::Srgb,
+        CanvasFormat::Float => ResolvedCanvasFormat::Float,
+    })
+}
+
 /// Set anti-aliasing sample count. Valid values: 1 (off), 2, 4, 8.
 /// Default is 4. Call before run().
 pub fn smooth(samples: u32) {
@@ -1220,7 +1268,12 @@ pub fn background(r: u8, g: u8, b: u8) {
 /// wash over the persistent canvas instead of clearing — the idiomatic
 /// trail-fade (`background_a(0, 0, 0, 10)`), as in p5.js.
 pub fn background_a(r: u8, g: u8, b: u8, a: u8) {
-    with_ctx(|ctx| ctx.rec.set_background_a(r, g, b, a));
+    with_ctx(|ctx| {
+        if a < 255 {
+            ctx.translucent_bg_used = true;
+        }
+        ctx.rec.set_background_a(r, g, b, a);
+    });
 }
 
 /// Set the stroke (outline) color to an opaque RGB value and enable stroke.
@@ -2138,7 +2191,7 @@ impl Gpu {
         }
     }
 
-    fn render(&mut self, frame: &Frame2D) -> Result<(), wgpu::SurfaceError> {
+    fn render(&mut self, frame: &DrawFrame) -> Result<(), wgpu::SurfaceError> {
         let output      = self.surface.get_current_texture()?;
         let surface_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -2580,9 +2633,17 @@ pub fn create_white_texture_2d(
 }
 
 /// Read the configured window settings without starting the event loop.
-/// Returns `(width, height, title, msaa_samples)`.
-pub fn settings() -> (u32, u32, String, u32) {
-    with_ctx(|ctx| (ctx.width, ctx.height, ctx.title.clone(), ctx.msaa_samples))
+/// Returns `(width, height, title, msaa_samples, pixel_density)`.
+pub fn settings() -> (u32, u32, String, u32, u32) {
+    with_ctx(|ctx| {
+        (
+            ctx.width,
+            ctx.height,
+            ctx.title.clone(),
+            ctx.msaa_samples,
+            ctx.density,
+        )
+    })
 }
 
 /// Reset per-frame 2D state (vertex list, frame counter, matrix stack).
@@ -2608,10 +2669,15 @@ pub fn take_2d_vertices() -> (wgpu::Color, Vec<u8>) {
     })
 }
 
+/// Full frame payload for the 3D player (canvas plane raster path).
+pub fn take_draw_frame() -> DrawFrame {
+    take_frame_2d()
+}
+
 /// Drain the full frame (vertices + draw runs + offscreen graphics) for the
 /// windowed host. Internal: external hosts use [`take_2d_vertices`].
-pub(crate) fn take_frame_2d() -> Frame2D {
-    with_ctx(|ctx| Frame2D {
+pub(crate) fn take_frame_2d() -> DrawFrame {
+    with_ctx(|ctx| DrawFrame {
         bg: ctx.rec.bg,
         clear: ctx.rec.bg_set,
         density: ctx.density,
@@ -2653,7 +2719,18 @@ pub fn set_key(pressed: bool, code: char) {
     });
 }
 
-// ── run() ───────────────────────────────────────────────
+// ── run() — moved to oripop-runtime ────────────────────────────────────────
+//
+// `run()` now lives in `oripop_runtime::run` / `oripop_3d::run_sketch`.
+// The legacy `Runner2D` window loop remains below for reference while
+// offscreen `Graphics` targets migrate to the canvas-plane player path.
+
+#[allow(dead_code)]
+fn run_moved_to_runtime() {
+    // See oripop_runtime::run and oripop_3d::run_sketch.
+}
+
+// ── Legacy Runner2D (graphics migration) ────────────────────────────────────
 
 struct Runner2D {
     draw_fn:      fn(),
@@ -2839,39 +2916,6 @@ impl ApplicationHandler for Runner2D {
             }
         }
     }
-}
-
-/// Open the window and start the draw loop.
-///
-/// `draw_fn` is called once per frame. Configure the window with [`size`],
-/// [`title`], and [`smooth`] *before* calling `run`.
-///
-/// This function blocks until the window is closed.
-pub fn run(draw_fn: fn()) {
-    let _ = log::set_logger(&LOGGER);
-    log::set_max_level(log::LevelFilter::Warn);
-
-    #[cfg(target_os = "windows")]
-    unsafe {
-        #[link(name = "user32")]
-        extern "system" {
-            fn SetProcessDpiAwarenessContext(value: isize) -> i32;
-        }
-        SetProcessDpiAwarenessContext(-2);
-    }
-
-    let (width, height, win_title, msaa) =
-        with_ctx(|ctx| (ctx.width, ctx.height, ctx.title.clone(), ctx.msaa_samples));
-
-    let window_attrs = Window::default_attributes()
-        .with_title(win_title)
-        .with_inner_size(LogicalSize::new(width as f64, height as f64));
-
-    let event_loop = EventLoop::new().expect("create event loop");
-    event_loop.set_control_flow(ControlFlow::Poll);
-
-    let mut app = Runner2D { draw_fn, window_attrs, msaa, window: None, gpu: None, last_frame: None };
-    event_loop.run_app(&mut app).expect("event loop error");
 }
 
 #[cfg(test)]

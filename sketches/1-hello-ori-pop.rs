@@ -1,4 +1,4 @@
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 fn main() {
     size(900, 700);

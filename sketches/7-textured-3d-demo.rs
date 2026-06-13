@@ -12,7 +12,7 @@
 //! Run with:
 //!   cargo run --bin 7-textured-3d-demo
 
-use oripop_3d::prelude::*;
+use oripop_runtime::prelude::*;
 
 fn main() {
     size(960, 640);

@@ -8,7 +8,7 @@
 //! marching squares emits the line segments where the field crosses the
 //! level — a living elevation map.
 
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 const W: f32 = 1100.0;
 const H: f32 = 720.0;

@@ -10,7 +10,7 @@
 
 use std::cell::RefCell;
 
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 const COLS: usize = 140;
 const ROWS: usize = 90;

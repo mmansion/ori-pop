@@ -15,7 +15,7 @@
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 use oripop_canvas::{generate_dots, Dot, Params, Singularity};
 
 const W: f32 = 800.0;

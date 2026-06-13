@@ -14,8 +14,7 @@
 //! - Generative textures computed entirely on the GPU (domain-warped FBM,
 //!   animated with time).
 //! - 3D render pass with depth testing, Lambertian lighting, and rim shading.
-//! - Seamless 2D overlay: any `oripop-canvas` drawing call inside the draw
-//!   callback is composited on top of the 3D scene in the same frame.
+//! - Canvas-authored content rasterizes to a [`MeshKind::Plane`] in the 3D pass.
 //! - Live **egui inspector panel** — shows camera, light, texture-gen params,
 //!   and scene objects. Toggle visibility with the **Space** key.
 //!
@@ -62,6 +61,7 @@ pub mod camera;
 pub mod capture;
 pub mod inspector;
 pub mod mesh;
+pub mod player;
 pub mod scene;
 mod renderer;
 
@@ -82,8 +82,14 @@ use winit::{
 
 // ── run3d ApplicationHandler ──────────────────────────────────────────────────
 
+enum DrawCallback {
+    Scene(fn(&mut Scene3D)),
+    Sketch(fn()),
+}
+
 struct Runner3D {
-    draw_fn:          fn(&mut Scene3D),
+    draw:             DrawCallback,
+    player_mode:      player::PlayerMode,
     window_attrs:     winit::window::WindowAttributes,
     msaa:             u32,
 
@@ -122,7 +128,12 @@ struct Runner3D {
 }
 
 impl Runner3D {
-    fn new(draw_fn: fn(&mut Scene3D), window_attrs: winit::window::WindowAttributes, msaa: u32) -> Self {
+    fn new(
+        draw:         DrawCallback,
+        player_mode:  player::PlayerMode,
+        window_attrs: winit::window::WindowAttributes,
+        msaa:         u32,
+    ) -> Self {
         let egui_ctx = egui::Context::default();
         egui_ctx.set_visuals(egui::Visuals::dark());
 
@@ -133,7 +144,8 @@ impl Runner3D {
         let orbit_az = -0.79_f32; // ~45° into the -X/-Y quadrant
 
         Self {
-            draw_fn,
+            draw,
+            player_mode,
             window_attrs,
             msaa,
             window:        None,
@@ -240,7 +252,7 @@ impl ApplicationHandler for Runner3D {
         );
 
         let phys = window.inner_size();
-        let (w, h, _, _) = oripop_canvas::draw::settings();
+        let (w, h, _, _, _) = oripop_canvas::draw::settings();
 
         let renderer = pollster::block_on(renderer::Renderer::init(
             Arc::clone(&window),
@@ -347,7 +359,6 @@ impl ApplicationHandler for Runner3D {
                 renderer.resize(sz.width, sz.height);
                 let lw = (sz.width  as f64 / renderer.scale_factor) as f32;
                 let lh = (sz.height as f64 / renderer.scale_factor) as f32;
-                renderer.update_2d_resolution(lw, lh);
                 self.scene.width  = lw;
                 self.scene.height = lh;
                 self.capture.update_surface(sz.width, sz.height, renderer.surface_format);
@@ -373,13 +384,25 @@ impl ApplicationHandler for Runner3D {
 
                 // ── Run draw callback ──────────────────────────────────────
                 oripop_canvas::draw::begin_frame();
-                (self.draw_fn)(&mut self.scene);
+                if self.player_mode == player::PlayerMode::Sketch {
+                    player::prepare_sketch_scene(&mut self.scene);
+                }
+                match self.draw {
+                    DrawCallback::Scene(f) => f(&mut self.scene),
+                    DrawCallback::Sketch(f) => f(),
+                }
+                if self.player_mode == player::PlayerMode::Sketch {
+                    player::finalize_sketch_scene(&mut self.scene);
+                } else if self.scene.canvas_plane {
+                    let (w, h, _, _, _) = oripop_canvas::draw::settings();
+                    player::ensure_canvas_plane(&mut self.scene, w as f32, h as f32);
+                }
+
+                let frame = oripop_canvas::draw::take_draw_frame();
 
                 // ── Apply orbit camera override ────────────────────────────
                 // Applied AFTER draw_fn so orbit takes precedence over any
                 // camera position the sketch may have set.
-                // Always applied when orbit_enabled — no longer gated on
-                // orbit_on, so the closer default radius shows from frame 1.
                 if self.scene.orbit_enabled {
                     let el = self.orbit_el;
                     let az = self.orbit_az;
@@ -391,8 +414,6 @@ impl ApplicationHandler for Runner3D {
                     );
                     self.scene.camera.target = self.orbit_target;
                 }
-
-                let (bg, vertices_2d) = oripop_canvas::draw::take_2d_vertices();
 
                 // ── Build egui frame ───────────────────────────────────────
                 let egui_output = if let Some(egui_winit) = self.egui_winit.as_mut() {
@@ -413,10 +434,8 @@ impl ApplicationHandler for Runner3D {
                     None
                 };
 
-                // ── Main render (compute + 3D + 2D overlay) ────────────────
-                // render() returns the SurfaceTexture without presenting so we
-                // can composite egui on the same texture before the single present.
-                let output = match renderer.render(&self.scene, bg, &vertices_2d) {
+                // ── Main render (canvas raster → compute → 3D) ─────────────
+                let output = match renderer.render(&self.scene, &frame) {
                     Ok(o)                                => o,
                     Err(wgpu::SurfaceError::Lost)        => { renderer.reconfigure(); return; }
                     Err(wgpu::SurfaceError::Outdated
@@ -581,25 +600,9 @@ impl ApplicationHandler for Runner3D {
     }
 }
 
-// ── run3d ─────────────────────────────────────────────────────────────────────
+// ── run3d / run_sketch ────────────────────────────────────────────────────────
 
-/// Open a window and start the combined 2D + 3D draw loop.
-///
-/// Configure the window with [`size`], [`title`], and [`smooth`] from
-/// `oripop_canvas` **before** calling `run3d`.
-///
-/// The `draw_fn` callback is called once per frame.  Inside it you can:
-/// - Mutate [`Scene3D`] (camera, objects, texture-gen params).
-/// - Call any `oripop_canvas` 2D drawing function; those shapes will be
-///   rendered as a depth-free overlay on top of the 3D scene.
-///
-/// Press **Space** to toggle the live inspector panel.
-///
-/// With [`Scene3D::orbit_enabled`], use **RMB drag** to orbit, **MMB drag** to pan, and **wheel** to
-/// zoom the 3D view (wheel over the Inspector scrolls egui). See the crate-level docs for details.
-///
-/// This function blocks until the window is closed.
-pub fn run3d(draw_fn: fn(&mut Scene3D)) {
+fn run_player(player_mode: player::PlayerMode, draw: DrawCallback) {
     #[cfg(target_os = "windows")]
     unsafe {
         #[link(name = "user32")]
@@ -609,7 +612,7 @@ pub fn run3d(draw_fn: fn(&mut Scene3D)) {
         SetProcessDpiAwarenessContext(-2);
     }
 
-    let (width, height, win_title, msaa) = oripop_canvas::draw::settings();
+    let (width, height, win_title, msaa, _) = oripop_canvas::draw::settings();
 
     let window_attrs = Window::default_attributes()
         .with_title(win_title)
@@ -618,8 +621,29 @@ pub fn run3d(draw_fn: fn(&mut Scene3D)) {
     let event_loop = EventLoop::new().expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = Runner3D::new(draw_fn, window_attrs, msaa);
+    let mut app = Runner3D::new(draw, player_mode, window_attrs, msaa);
     event_loop.run_app(&mut app).expect("event loop error");
+}
+
+/// Open a window and start the 3D player loop (free scene mode).
+///
+/// Canvas draws raster to a [`MeshKind::Plane`] texture in the 3D pass — there
+/// is no screen-space overlay pass.
+///
+/// Configure the window with [`size`], [`title`], and [`smooth`] from
+/// `oripop_canvas` **before** calling `run3d`.
+///
+/// Press **Space** to toggle the live inspector panel.
+pub fn run3d(draw_fn: fn(&mut Scene3D)) {
+    run_player(player::PlayerMode::Scene, DrawCallback::Scene(draw_fn));
+}
+
+/// Processing-style sketch loop: orthographic camera + canvas plane in 3D.
+///
+/// Configure with [`size`], [`smooth`], [`pixel_density`], and optionally
+/// [`canvas_format`] before calling.
+pub fn run_sketch(draw_fn: fn()) {
+    run_player(player::PlayerMode::Sketch, DrawCallback::Sketch(draw_fn));
 }
 
 // ── prelude ───────────────────────────────────────────────────────────────────
@@ -636,6 +660,7 @@ pub fn run3d(draw_fn: fn(&mut Scene3D)) {
     pub use glam::{Mat4, Quat, Vec2, Vec3, Vec4};
     pub use crate::{
         run3d,
+        run_sketch,
         Camera,
         MeshKind,
         Object3D,
@@ -645,5 +670,6 @@ pub fn run3d(draw_fn: fn(&mut Scene3D)) {
         Scene3D,
         TextureGenParams,
         STIPPLE_CANVAS_SIZE,
+        player::PlayerMode,
     };
 }

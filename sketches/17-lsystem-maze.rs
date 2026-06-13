@@ -18,7 +18,7 @@
 
 use std::cell::RefCell;
 
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 const W: f32 = 900.0;
 const H: f32 = 900.0;

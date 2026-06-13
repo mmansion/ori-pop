@@ -3,7 +3,7 @@
 //! Proves: arc modes (open/chord/pie), stroke caps, lerp_color, push_style /
 //! pop_style, shear, frame_rate, transforms.
 
-use oripop_canvas::prelude::*;
+use oripop_runtime::prelude::*;
 
 const W: f32 = 900.0;
 const H: f32 = 900.0;
