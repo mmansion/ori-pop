@@ -1,7 +1,7 @@
-//! wgpu renderer that drives three GPU passes per frame:
-//!   1. Compute pass    — generative texture (domain-warped FBM, GPU only)
-//!   2. 3D render pass  — meshes with depth, MVP transform, texture sampling
-//!   3. 2D overlay pass — alpha-blended 2D vertices from oripop-canvas + MSAA resolve
+//! wgpu renderer that drives GPU passes per frame:
+//!   1. Canvas raster   — DrawFrame → plane texture (graphics + textured runs)
+//!   2. Compute pass    — generative texture (domain-warped FBM, GPU only)
+//!   3. 3D render pass  — meshes with depth, MVP transform, texture sampling
 //!
 //! A fourth egui pass is driven externally by `lib.rs` via `render_egui()`,
 //! keeping the egui renderer separate from the core pipeline.
@@ -16,7 +16,9 @@ use crate::{
     scene::{ObjectTexture, Scene3D, STIPPLE_CANVAS_SIZE},
 };
 
-use oripop_canvas::draw::{DrawFrame, ResolvedCanvasFormat, VERTEX_2D_STRIDE};
+use oripop_canvas::draw::{DrawFrame, ResolvedCanvasFormat};
+
+use crate::canvas_raster::CanvasRaster;
 
 // ── GPU-side uniform structs ─────────────────────────────────────────────────
 //
@@ -35,13 +37,6 @@ struct Uniforms3D {
     time:       f32,           // offset 160,  4 B
     _pad:       [f32; 3],      // offset 164, 12 B
 }                              // total: 176 B
-
-#[repr(C)]
-#[derive(Copy, Clone, Pod, Zeroable)]
-struct Uniforms2D {
-    resolution: [f32; 2], // offset 0, 8 B
-    _pad:       [f32; 2], // offset 8, 8 B
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -114,9 +109,7 @@ pub(crate) struct Renderer {
     texture_bg:           wgpu::BindGroup,
     texture_bg_layout:    wgpu::BindGroupLayout,
     sampler:              wgpu::Sampler,
-    /// GPU canvas plane texture sampled by [`ObjectTexture::Canvas`].
-    canvas_texture:       wgpu::Texture,
-    canvas_texture_view:  wgpu::TextureView,
+    /// Bind group sampling the canvas plane texture ([`ObjectTexture::Canvas`]).
     texture_bg_canvas:    wgpu::BindGroup,
     canvas_tex_w:         u32,
     canvas_tex_h:         u32,
@@ -126,20 +119,12 @@ pub(crate) struct Renderer {
     // Pre-built mesh primitives
     meshes: [GpuMesh; 3], // indexed by MeshKind
 
-    // Canvas raster pipeline (2D verts → plane texture; reuses oripop-canvas WGSL)
-    canvas_pipeline:    wgpu::RenderPipeline,
-    canvas_uniform_buf: wgpu::Buffer,
-    canvas_uniform_bg:  wgpu::BindGroup,
-    canvas_msaa_view:   Option<wgpu::TextureView>,
-
-    /// Persistent 2D vertex buffer for canvas raster — grown on demand.
-    vb_canvas:     Option<wgpu::Buffer>,
-    vb_canvas_cap: u64,
+    /// Full canvas raster path (graphics targets + textured draw runs).
+    canvas_raster: CanvasRaster,
 }
 
 const MAX_OBJECTS:    u64 = 256;
 const GEN_TEX_SIZE:   u32 = 512;
-const CANVAS_MSAA:    u32 = 4;
 
 fn depth_format() -> wgpu::TextureFormat { wgpu::TextureFormat::Depth32Float }
 
@@ -188,46 +173,26 @@ fn resolved_to_gpu_format(resolved: ResolvedCanvasFormat) -> wgpu::TextureFormat
     }
 }
 
-fn create_canvas_texture_binding(
+fn create_canvas_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindGroup) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label:           Some("canvas plane texture"),
-        size:            wgpu::Extent3d {
-            width:                 width.max(1),
-            height:                height.max(1),
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count:    1,
-        dimension:       wgpu::TextureDimension::D2,
-        format,
-        usage:           wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats:    &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    canvas_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
         label:   Some("texture bg canvas"),
         layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding:  0,
-                resource: wgpu::BindingResource::TextureView(&view),
+                resource: wgpu::BindingResource::TextureView(canvas_view),
             },
             wgpu::BindGroupEntry {
                 binding:  1,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
         ],
-    });
-    (texture, view, bind_group)
+    })
 }
 
 impl Renderer {
@@ -236,7 +201,7 @@ impl Renderer {
         phys_w:    u32,
         phys_h:    u32,
         logical_w: u32,
-        logical_h: u32,
+        _logical_h: u32,
         msaa:      u32,
     ) -> Self {
         let instance = wgpu::Instance::default();
@@ -421,9 +386,6 @@ impl Renderer {
             ],
         });
 
-        let (canvas_texture, canvas_texture_view, texture_bg_canvas) =
-            create_canvas_texture_binding(&device, &texture_bg_layout, &sampler, 1, 1, wgpu::TextureFormat::Rgba8UnormSrgb);
-
         // ── 3D uniform buffer (dynamic, one slot per object) ───────────────
 
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
@@ -525,99 +487,20 @@ impl Renderer {
             GpuMesh::upload(&device, &MeshKind::Plane.build()),
         ];
 
-        // ── Canvas raster pipeline (2D → plane texture) ───────────────────
-
+        let canvas_raster = CanvasRaster::new(device.clone(), queue.clone());
         let canvas_gpu_format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let shader_canvas = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label:  Some("canvas raster shader"),
-            source: wgpu::ShaderSource::Wgsl(oripop_canvas::draw::SHADER_2D_WGSL.into()),
-        });
-
-        let canvas_uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label:    Some("canvas uniforms"),
-            contents: bytemuck::bytes_of(&Uniforms2D {
-                resolution: [logical_w as f32, logical_h as f32],
-                _pad:       [0.0; 2],
-            }),
-            usage:    wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let canvas_uniform_bg_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label:   Some("canvas bg layout"),
-            entries: &oripop_canvas::draw::bind_group_layout_entries_2d(),
-        });
-
-        let (canvas_white_view, canvas_sampler) =
-            oripop_canvas::draw::create_white_texture_2d(&device, &queue);
-        let canvas_uniform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("canvas bg"),
-            layout:  &canvas_uniform_bg_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding:  0,
-                    resource: canvas_uniform_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding:  1,
-                    resource: wgpu::BindingResource::TextureView(&canvas_white_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding:  2,
-                    resource: wgpu::BindingResource::Sampler(&canvas_sampler),
-                },
-            ],
-        });
-
-        let canvas_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label:                Some("canvas pipeline layout"),
-            bind_group_layouts:   &[&canvas_uniform_bg_layout],
-            push_constant_ranges: &[],
-        });
-
-        let canvas_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label:  Some("canvas raster pipeline"),
-            layout: Some(&canvas_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module:              &shader_canvas,
-                entry_point:         Some("vs_main"),
-                buffers:             &[oripop_canvas::draw::vertex_2d_buffer_layout()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module:              &shader_canvas,
-                entry_point:         Some("fs_main"),
-                targets:             &[Some(wgpu::ColorTargetState {
-                    format:     canvas_gpu_format,
-                    blend:      Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology:           wgpu::PrimitiveTopology::TriangleList,
-                front_face:         wgpu::FrontFace::Ccw,
-                cull_mode:          None,
-                strip_index_format: None,
-                polygon_mode:       wgpu::PolygonMode::Fill,
-                unclipped_depth:    false,
-                conservative:       false,
-            },
-            depth_stencil: None,
-            multisample:   wgpu::MultisampleState {
-                count:                     CANVAS_MSAA,
-                mask:                      !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview:     None,
-            cache:         None,
-        });
-
-        let canvas_msaa_view = create_msaa_view(&device, canvas_gpu_format, 1, 1, CANVAS_MSAA);
 
         // ── MSAA + depth ───────────────────────────────────────────────────
 
         let msaa_view  = create_msaa_view(&device, format, phys_w, phys_h, msaa);
         let depth_view = create_depth_view(&device, phys_w, phys_h, msaa);
+
+        let texture_bg_canvas = create_canvas_bind_group(
+            &device,
+            &texture_bg_layout,
+            &sampler,
+            canvas_raster.canvas_texture_view(),
+        );
 
         Self {
             surface,
@@ -641,20 +524,13 @@ impl Renderer {
             texture_bg,
             texture_bg_layout,
             sampler,
-            canvas_texture,
-            canvas_texture_view,
             texture_bg_canvas,
             canvas_tex_w: 1,
             canvas_tex_h: 1,
             canvas_gpu_format,
             uniform_slot_size: slot_size,
             meshes,
-            canvas_pipeline,
-            canvas_uniform_buf,
-            canvas_uniform_bg,
-            canvas_msaa_view,
-            vb_canvas:     None,
-            vb_canvas_cap: 0,
+            canvas_raster,
         }
     }
 
@@ -677,17 +553,6 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, w, h, self.msaa_samples);
     }
 
-    pub fn update_canvas_resolution(&self, canvas_w: f32, canvas_h: f32) {
-        self.queue.write_buffer(
-            &self.canvas_uniform_buf,
-            0,
-            bytemuck::bytes_of(&Uniforms2D {
-                resolution: [canvas_w, canvas_h],
-                _pad:       [0.0; 2],
-            }),
-        );
-    }
-
     fn ensure_canvas_target(&mut self, width: u32, height: u32, resolved: ResolvedCanvasFormat) {
         let format = resolved_to_gpu_format(resolved);
         let w = width.max(1);
@@ -698,148 +563,13 @@ impl Renderer {
         self.canvas_tex_w = w;
         self.canvas_tex_h = h;
         self.canvas_gpu_format = format;
-        let (tex, view, bg) = create_canvas_texture_binding(
+        self.canvas_raster.ensure_canvas(w, h, resolved);
+        self.texture_bg_canvas = create_canvas_bind_group(
             &self.device,
             &self.texture_bg_layout,
             &self.sampler,
-            w,
-            h,
-            format,
+            self.canvas_raster.canvas_texture_view(),
         );
-        self.canvas_texture = tex;
-        self.canvas_texture_view = view;
-        self.texture_bg_canvas = bg;
-        self.canvas_msaa_view = create_msaa_view(&self.device, format, w, h, CANVAS_MSAA);
-
-        if format != wgpu::TextureFormat::Rgba8UnormSrgb {
-            // Rebuild raster pipeline when the canvas format changes.
-            let shader = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label:  Some("canvas raster shader"),
-                source: wgpu::ShaderSource::Wgsl(oripop_canvas::draw::SHADER_2D_WGSL.into()),
-            });
-            let layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label:   Some("canvas bg layout"),
-                entries: &oripop_canvas::draw::bind_group_layout_entries_2d(),
-            });
-            let pipeline_layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label:                Some("canvas pipeline layout"),
-                bind_group_layouts:   &[&layout],
-                push_constant_ranges: &[],
-            });
-            self.canvas_pipeline = self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label:  Some("canvas raster pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module:              &shader,
-                    entry_point:         Some("vs_main"),
-                    buffers:             &[oripop_canvas::draw::vertex_2d_buffer_layout()],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module:              &shader,
-                    entry_point:         Some("fs_main"),
-                    targets:             &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend:      Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology:           wgpu::PrimitiveTopology::TriangleList,
-                    front_face:         wgpu::FrontFace::Ccw,
-                    cull_mode:          None,
-                    strip_index_format: None,
-                    polygon_mode:       wgpu::PolygonMode::Fill,
-                    unclipped_depth:    false,
-                    conservative:       false,
-                },
-                depth_stencil: None,
-                multisample:   wgpu::MultisampleState {
-                    count:                     CANVAS_MSAA,
-                    mask:                      !0,
-                    alpha_to_coverage_enabled: false,
-                },
-                multiview:     None,
-                cache:         None,
-            });
-        }
-    }
-
-    fn raster_canvas(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
-        frame: &DrawFrame,
-        canvas_w: f32,
-        canvas_h: f32,
-        accumulate: bool,
-    ) {
-        let bytes = bytemuck::cast_slice(&frame.vertices);
-        if bytes.is_empty() && !frame.clear {
-            return;
-        }
-
-        if !bytes.is_empty() {
-            let needed = bytes.len() as u64;
-            if self.vb_canvas_cap < needed {
-                let cap = needed.next_power_of_two().max(4096);
-                self.vb_canvas = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label:              Some("canvas vb"),
-                    size:               cap,
-                    usage:              wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                }));
-                self.vb_canvas_cap = cap;
-            }
-            self.queue
-                .write_buffer(self.vb_canvas.as_ref().unwrap(), 0, bytes);
-        }
-
-        self.update_canvas_resolution(canvas_w, canvas_h);
-
-        let load = if accumulate {
-            wgpu::LoadOp::Load
-        } else if frame.clear {
-            wgpu::LoadOp::Clear(frame.bg)
-        } else {
-            wgpu::LoadOp::Load
-        };
-
-        let color_view = &self.canvas_texture_view;
-        let msaa_view = self.canvas_msaa_view.as_ref().unwrap();
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label:                    Some("canvas raster"),
-            color_attachments:        &[Some(wgpu::RenderPassColorAttachment {
-                view:           msaa_view,
-                resolve_target: Some(color_view),
-                ops:            wgpu::Operations {
-                    load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes:         None,
-            occlusion_query_set:      None,
-        });
-
-        if !bytes.is_empty() {
-            pass.set_pipeline(&self.canvas_pipeline);
-            pass.set_bind_group(0, &self.canvas_uniform_bg, &[]);
-            pass.set_vertex_buffer(0, self.vb_canvas.as_ref().unwrap().slice(..));
-            if frame.runs.is_empty() {
-                let count = bytes.len() as u32 / VERTEX_2D_STRIDE as u32;
-                pass.draw(0..count, 0..1);
-            } else {
-                for run in &frame.runs {
-                    if run.tex != 0 {
-                        continue;
-                    }
-                    pass.draw(run.start..run.start + run.count, 0..1);
-                }
-            }
-        }
     }
 
     pub fn reconfigure(&mut self) {
@@ -874,6 +604,7 @@ impl Renderer {
                 .iter()
                 .any(|o| o.visible && o.texture == ObjectTexture::Canvas)
             || !frame.vertices.is_empty()
+            || !frame.graphics.is_empty()
             || frame.clear;
 
         if need_canvas {
@@ -913,7 +644,7 @@ impl Renderer {
             self.ensure_canvas_target(STIPPLE_CANVAS_SIZE, STIPPLE_CANVAS_SIZE, ResolvedCanvasFormat::Srgb);
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
-                    texture:   &self.canvas_texture,
+                    texture:   self.canvas_raster.canvas_texture(),
                     mip_level: 0,
                     origin:    wgpu::Origin3d::ZERO,
                     aspect:    wgpu::TextureAspect::All,
@@ -933,7 +664,7 @@ impl Renderer {
         }
 
         if need_canvas {
-            self.raster_canvas(
+            self.canvas_raster.encode(
                 &mut encoder,
                 frame,
                 canvas_w,

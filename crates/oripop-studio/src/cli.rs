@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use oripop_project::Project;
 
 use crate::bake::BakeOptions;
-use crate::gpu::PreviewGpu;
+use oripop_3d::SketchViewport;
 use crate::paths::default_project_path;
 use crate::preview::load_cartridge;
 
@@ -73,14 +73,14 @@ fn cmd_bake(args: &mut impl Iterator<Item = String>) -> io::Result<()> {
     let rest: Vec<_> = args.collect();
     let (project, texture_id) = parse_project_and_texture(&rest)?;
     let (cartridge, width, height) = load_cartridge(&project, &texture_id)?;
-    let mut gpu = PreviewGpu::new_headless()?;
+    let mut viewport = SketchViewport::new_headless()?;
     let (png, manifest) = crate::bake::bake(
         &project,
         &texture_id,
         &cartridge,
         width,
         height,
-        &mut gpu,
+        &mut viewport,
         BakeOptions::default(),
     )?;
     println!("baked {}", png.display());

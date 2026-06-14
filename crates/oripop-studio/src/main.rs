@@ -6,7 +6,6 @@ mod cartridge;
 mod cli;
 mod editor;
 mod engine;
-mod gpu;
 mod paths;
 mod preview;
 mod window;

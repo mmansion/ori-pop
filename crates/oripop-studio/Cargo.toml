@@ -16,6 +16,7 @@ egui-wgpu.workspace = true
 image.workspace = true
 libloading.workspace = true
 oripop-canvas = { path = "../oripop-canvas" }
+oripop-3d = { path = "../oripop-3d" }
 oripop-project = { path = "../oripop-project" }
 pollster.workspace = true
 serde_json.workspace = true

@@ -11,9 +11,8 @@
 //! name.
 //!
 //! Drawing is exchanged through a C-ABI callback: the cdylib draws into its
-//! own thread-local context, calls `take_2d_vertices`, and emits the
-//! resulting background color and vertex bytes back into a host-owned
-//! [`Frame`] buffer.
+//! own thread-local context and emits a serialized [`DrawFrame`] wire blob
+//! (cartridge ABI v3) back into a host-owned buffer.
 
 use std::cell::RefCell;
 use std::fs;
@@ -25,35 +24,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use libloading::{Library, Symbol};
+use oripop_canvas::cartridge::{decode_draw_frame, DecodedDrawFrame};
+use oripop_canvas::draw::DrawFrame;
 
 type EmitFn = unsafe extern "C" fn(
-    emit_ctx: *mut c_void,
-    bg_r:     f64,
-    bg_g:     f64,
-    bg_b:     f64,
-    bg_a:     f64,
-    vert_ptr: *const u8,
-    vert_len: usize,
+    emit_ctx:  *mut c_void,
+    frame_ptr: *const u8,
+    frame_len: usize,
 );
 
 type RenderFn = unsafe extern "C" fn(f32, *const u8, usize, EmitFn, *mut c_void);
 
 type AbiVersionFn = unsafe extern "C" fn() -> u32;
-
-/// One emitted frame: background color + 2D vertex bytes (xyzrgba layout).
-pub struct Frame {
-    pub bg:        wgpu::Color,
-    pub vertices:  Vec<u8>,
-}
-
-impl Default for Frame {
-    fn default() -> Self {
-        Self {
-            bg:       wgpu::Color::BLACK,
-            vertices: Vec::new(),
-        }
-    }
-}
 
 pub struct Cartridge {
     #[allow(dead_code)]
@@ -61,7 +43,7 @@ pub struct Cartridge {
     params_cache: Vec<u8>,
     library:      Option<Library>,
     render_addr:  usize,
-    frame:        RefCell<Frame>,
+    frame:        RefCell<DecodedDrawFrame>,
 }
 
 impl Cartridge {
@@ -74,13 +56,12 @@ impl Cartridge {
         let staged = stage_copy(workspace_root, texture_id, &lib_path)?;
         let library = unsafe { Library::new(&staged) }.map_err(load_err)?;
 
-        // Refuse cartridges whose emitted vertex layout does not match ours.
         let expected = oripop_canvas::cartridge::CARTRIDGE_ABI_VERSION;
         let abi = unsafe {
             library
                 .get::<AbiVersionFn>(b"oripop_texture_abi_version")
                 .map(|sym| sym())
-                .unwrap_or(1) // symbol predates versioning => ABI v1
+                .unwrap_or(1)
         };
         if abi != expected {
             return Err(io::Error::new(
@@ -104,7 +85,7 @@ impl Cartridge {
             params_cache,
             library: Some(library),
             render_addr,
-            frame: RefCell::new(Frame::default()),
+            frame: RefCell::new(empty_frame()),
         })
     }
 
@@ -114,12 +95,8 @@ impl Cartridge {
 
     /// Call the texture's render entry. Returns a borrow of the host-owned
     /// frame that the cdylib emitted.
-    pub fn render(&self, t: f32) -> std::cell::Ref<'_, Frame> {
-        {
-            let mut frame = self.frame.borrow_mut();
-            frame.bg = wgpu::Color::BLACK;
-            frame.vertices.clear();
-        }
+    pub fn render(&self, t: f32) -> std::cell::Ref<'_, DecodedDrawFrame> {
+        *self.frame.borrow_mut() = empty_frame();
         let f: RenderFn = unsafe { std::mem::transmute(self.render_addr) };
         let frame_ptr = self.frame.as_ptr() as *mut c_void;
         unsafe {
@@ -137,35 +114,36 @@ impl Cartridge {
 
 impl Drop for Cartridge {
     fn drop(&mut self) {
-        // Library must outlive any function pointer derived from it.
         self.library.take();
     }
 }
 
+fn empty_frame() -> DecodedDrawFrame {
+    DecodedDrawFrame {
+        frame: DrawFrame {
+            bg:       wgpu::Color::BLACK,
+            clear:    false,
+            density:  1,
+            vertices: Vec::new(),
+            runs:     Vec::new(),
+            graphics: Vec::new(),
+        },
+        resolved: oripop_canvas::draw::ResolvedCanvasFormat::Srgb,
+    }
+}
+
 unsafe extern "C" fn emit_thunk(
-    emit_ctx: *mut c_void,
-    bg_r:     f64,
-    bg_g:     f64,
-    bg_b:     f64,
-    bg_a:     f64,
-    vert_ptr: *const u8,
-    vert_len: usize,
+    emit_ctx:  *mut c_void,
+    frame_ptr: *const u8,
+    frame_len: usize,
 ) {
-    if emit_ctx.is_null() {
+    if emit_ctx.is_null() || frame_ptr.is_null() || frame_len == 0 {
         return;
     }
-    let frame = &mut *(emit_ctx as *mut Frame);
-    frame.bg = wgpu::Color {
-        r: bg_r,
-        g: bg_g,
-        b: bg_b,
-        a: bg_a,
-    };
-    if vert_len == 0 || vert_ptr.is_null() {
-        return;
+    let src = std::slice::from_raw_parts(frame_ptr, frame_len);
+    if let Some(decoded) = decode_draw_frame(src) {
+        *(emit_ctx as *mut DecodedDrawFrame) = decoded;
     }
-    let src = std::slice::from_raw_parts(vert_ptr, vert_len);
-    frame.vertices.extend_from_slice(src);
 }
 
 fn build_texture(workspace_root: &Path, texture_id: &str) -> io::Result<PathBuf> {

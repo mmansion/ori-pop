@@ -3,11 +3,11 @@
 use std::path::PathBuf;
 
 use eframe::egui;
+use oripop_3d::SketchViewport;
 use oripop_project::Project;
 
 use crate::bake::{self, BakeOptions};
 use crate::editor::CodeEditor;
-use crate::gpu::PreviewGpu;
 use crate::paths::default_project_path;
 use crate::preview::EmbeddedPreview;
 
@@ -20,12 +20,12 @@ pub struct StudioApp {
     busy:         bool,
     preview:      EmbeddedPreview,
     editor:       CodeEditor,
-    gpu:          PreviewGpu,
+    viewport:     SketchViewport,
     popped_out:   bool,
 }
 
 impl StudioApp {
-    pub fn new(gpu: PreviewGpu) -> Self {
+    pub fn new(viewport: SketchViewport) -> Self {
         let project_path = default_project_path();
         let mut app = Self {
             project_path,
@@ -36,7 +36,7 @@ impl StudioApp {
             busy: false,
             preview: EmbeddedPreview::new(),
             editor: CodeEditor::empty(),
-            gpu,
+            viewport,
             popped_out: false,
         };
         app.reload_project();
@@ -79,7 +79,7 @@ impl StudioApp {
         };
         self.set_status(format!("Compiling {id}…"));
         self.preview.load(&proj, id);
-        self.gpu.invalidate_target();
+        self.viewport.invalidate_target();
         self.editor = CodeEditor::load(&proj, id);
         if let Some(err) = self.preview.error.clone() {
             self.set_status(format!("Failed: {err}"));
@@ -97,7 +97,7 @@ impl StudioApp {
                     let proj = self.project.as_ref().cloned();
                     if let Some(proj) = proj {
                         self.preview.load(&proj, &id);
-                        self.gpu.invalidate_target();
+                        self.viewport.invalidate_target();
                         if let Some(err) = &self.preview.error {
                             self.set_status(format!("Build failed: {err}"));
                         } else {
@@ -133,8 +133,8 @@ impl StudioApp {
             frame: self.preview.frame,
         };
         let cartridge = self.preview.cartridge.as_ref().unwrap();
-        let result = bake::bake(&proj, &id, cartridge, width, height, &mut self.gpu, opts);
-        self.gpu.invalidate_target();
+        let result = bake::bake(&proj, &id, cartridge, width, height, &mut self.viewport, opts);
+        self.viewport.invalidate_target();
         match result {
             Ok((png, _)) => self.set_status(format!("Baked {}", png.display())),
             Err(e) => self.set_status(format!("Bake failed: {e}")),
@@ -150,10 +150,11 @@ impl StudioApp {
 
     fn current_texture(&mut self) -> Option<egui::TextureId> {
         let cartridge = self.preview.cartridge.as_ref()?;
-        let t = self.preview.time();
+        let decoded = cartridge.render(self.preview.time());
         let w = self.preview.width;
         let h = self.preview.height;
-        self.gpu.render(cartridge, t, w, h)
+        self.viewport
+            .render(&decoded.frame, decoded.resolved, w, h)
     }
 
     fn draw_preview_body(
@@ -365,8 +366,8 @@ pub fn run_gui() -> eframe::Result<()> {
                 .wgpu_render_state
                 .as_ref()
                 .expect("oripop-studio requires the eframe wgpu backend");
-            let gpu = PreviewGpu::new(render_state);
-            Ok(Box::new(StudioApp::new(gpu)) as Box<dyn eframe::App>)
+            let viewport = SketchViewport::new(render_state);
+            Ok(Box::new(StudioApp::new(viewport)) as Box<dyn eframe::App>)
         }),
     )
 }

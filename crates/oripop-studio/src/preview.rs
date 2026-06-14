@@ -1,6 +1,6 @@
 //! Preview state — loaded cartridge, animation clock, play / pause.
 //!
-//! Actual rendering lives in [`crate::gpu::PreviewGpu`]; this struct only
+//! Actual rendering lives in [`oripop_3d::SketchViewport`]; this struct only
 //! tracks what to draw and when.
 
 use std::io;

@@ -5,10 +5,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use oripop_3d::SketchViewport;
 use oripop_project::{BakeLock, BakeManifest, CanvasKind, Project};
 
 use crate::cartridge::Cartridge;
-use crate::gpu::PreviewGpu;
 
 pub struct BakeOptions {
     pub time:  f32,
@@ -27,10 +27,11 @@ pub fn bake(
     cartridge: &Cartridge,
     width: u32,
     height: u32,
-    gpu: &mut PreviewGpu,
+    viewport: &mut SketchViewport,
     opts: BakeOptions,
 ) -> io::Result<(PathBuf, PathBuf)> {
-    let rgba = gpu.bake_rgba(cartridge, opts.time, width, height);
+    let decoded = cartridge.render(opts.time);
+    let rgba = viewport.bake_rgba(&decoded.frame, decoded.resolved, width, height)?;
 
     let bakes_dir = project.root.join("bakes").join(texture_id);
     fs::create_dir_all(&bakes_dir)?;

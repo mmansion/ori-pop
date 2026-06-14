@@ -63,7 +63,11 @@ pub mod inspector;
 pub mod mesh;
 pub mod player;
 pub mod scene;
+mod canvas_raster;
 mod renderer;
+pub mod sketch_viewport;
+
+pub use sketch_viewport::SketchViewport;
 
 pub use camera::{Camera, Projection};
 pub use mesh::MeshKind;

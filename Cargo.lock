@@ -1801,13 +1801,10 @@ dependencies = [
  "image",
  "log",
  "lyon",
- "pollster",
  "rand",
- "raw-window-handle",
  "serde",
  "serde_json",
  "wgpu",
- "winit",
 ]
 
 [[package]]
@@ -1844,6 +1841,7 @@ dependencies = [
  "egui-wgpu",
  "image",
  "libloading",
+ "oripop-3d",
  "oripop-canvas",
  "oripop-project",
  "pollster",
